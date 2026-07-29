@@ -2,7 +2,7 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const mysql = require('mysql2/promise');
 // --- GLOBALE KONFIGURATION ---
 const CONFIG = {
-    phoneNumber: '491701234567',
+    phoneNumber: '4915129562482',
     // MySQL Zugangsdaten
     db: {
         host: '192.168.10.2',
