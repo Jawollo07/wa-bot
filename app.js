@@ -1,6 +1,7 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const mysql = require('mysql2/promise');
+const QRCode = require('qrcode');
 
 // --- GLOBALE KONFIGURATION ---
 const CONFIG = {
@@ -254,11 +255,21 @@ const client = new Client({
     puppeteer: { args: ['--no-sandbox', '--disable-setuid-sandbox'] }
 });
 
-client.on('qr', (qr) => {
-    qrcode.generate(qr, { small: true });
-    console.log('Bitte scanne den QR-Code!');
-});
+client.on('qr', async (qr) => {
+    // 1. In der Konsole ausgeben
+    qrcodeTerminal.generate(qr, { small: true });
 
+    // 2. Als PNG-Bild im Projektordner speichern
+    try {
+        await QRCode.toFile('./qrcode.png', qr, {
+            width: 500,
+            margin: 2
+        });
+        console.log('🖼️  Der QR-Code wurde als "qrcode.png" im Hauptordner gespeichert!');
+    } catch (err) {
+        console.error('❌ Fehler beim Speichern des QR-Code Bildes:', err);
+    }
+});
 client.on('ready', () => {
     console.log('🤖 Moderations-Bot ist einsatzbereit!');
 });
