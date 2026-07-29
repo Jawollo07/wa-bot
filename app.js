@@ -34,6 +34,7 @@ const CONFIG = {
 
 let dbPool;
 let loadedBadWords = [];
+let pairingCodeRequested = false;
 // In-Memory Spam-Tracker: Map<"groupId_userId", Array<timestamp>>
 const messageTimestamps = new Map();
 
