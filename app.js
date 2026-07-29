@@ -6,10 +6,10 @@ const mysql = require('mysql2/promise');
 const CONFIG = {
     // MySQL Zugangsdaten
     db: {
-        host: 'localhost',
-        user: 'root',
-        password: 'deinpasswort',
-        database: 'whatsapp_bot',
+        host: '127.0.0.1',
+        user: 'u28_53RgDoRlUI',
+        password: 'bPp4VKjVBKOjx!cV=nvcN1hi',
+        database: 's28_wa-bot',
         port: 3306
     },
     // Standard-Einstellungen für neue Gruppen
