@@ -3,6 +3,10 @@ const mysql = require('mysql2/promise');
 // --- GLOBALE KONFIGURATION ---
 const CONFIG = {
     phoneNumber: '4915129562482',
+    allowedGroups: [
+        '120363123456789012@g.us',
+        '120363098765432109@g.us'
+    ],
     // MySQL Zugangsdaten
     db: {
         host: '192.168.10.2',
@@ -307,7 +311,7 @@ client.on('message', async (msg) => {
         const chat = await msg.getChat();
         const groupId = chat.id._serialized;
         const senderId = msg.author || msg.from;
-
+        console.log(`Gruppe: "${chat.name}" | ID: ${groupId}`);
         const participant = chat.participants.find(p => p.id._serialized === senderId);
         const isAdmin = participant ? (participant.isAdmin || participant.isSuperAdmin) : false;
 
