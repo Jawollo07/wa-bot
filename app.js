@@ -6,7 +6,7 @@ const mysql = require('mysql2/promise');
 const CONFIG = {
     // MySQL Zugangsdaten
     db: {
-        host: '127.0.0.1',
+        host: '192.168.10.2',
         user: 'u28_53RgDoRlUI',
         password: 'bPp4VKjVBKOjx!cV=nvcN1hi',
         database: 's28_wa-bot',
