@@ -1,9 +1,8 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const mysql = require('mysql2/promise');
-const QRCode = require('qrcode');
-const qrcodeTerminal = require('qrcode-terminal');
 // --- GLOBALE KONFIGURATION ---
 const CONFIG = {
+    phoneNumber: '491701234567',
     // MySQL Zugangsdaten
     db: {
         host: '192.168.10.2',
@@ -254,19 +253,31 @@ const client = new Client({
     puppeteer: { args: ['--no-sandbox', '--disable-setuid-sandbox'] }
 });
 
-client.on('qr', async (qr) => {
-    // 1. In der Konsole ausgeben
-    qrcodeTerminal.generate(qr, { small: true });
+client.on('qr', async () => {
+    if (!pairingCodeRequested) {
+        pairingCodeRequested = true;
 
-    // 2. Als PNG-Bild im Projektordner speichern
-    try {
-        await QRCode.toFile('./qrcode.png', qr, {
-            width: 500,
-            margin: 2
-        });
-        console.log('🖼️  Der QR-Code wurde als "qrcode.png" im Hauptordner gespeichert!');
-    } catch (err) {
-        console.error('❌ Fehler beim Speichern des QR-Code Bildes:', err);
+        if (!CONFIG.phoneNumber || CONFIG.phoneNumber === '491701234567') {
+            console.error('❌ FEHLER: Bitte trage zuerst deine echte Telefonnummer in CONFIG.phoneNumber ein!');
+            return;
+        }
+
+        try {
+            // Anforderung des 8-stelligen Kopplungscodes
+            const code = await client.requestPairingCode(CONFIG.phoneNumber);
+            
+            console.log('\n==================================================');
+            console.log(`🔑 DEIN KOPPLUNGSCODE:  ${code}`);
+            console.log('==================================================\n');
+            console.log('👉 So verknüpfst du den Bot auf deinem Handy:');
+            console.log('1. Öffne WhatsApp auf deinem Smartphone.');
+            console.log('2. Gehe zu "Einstellungen" > "Verknüpfte Geräte".');
+            console.log('3. Tippe auf "Gerät verknüpfen".');
+            console.log('4. Wähle unten "Stattdessen mit Telefonnummer verknüpfen".');
+            console.log(`5. Gib diesen Code ein: ${code}\n`);
+        } catch (err) {
+            console.error('❌ Fehler beim Anfordern des Kopplungscodes:', err);
+        }
     }
 });
 client.on('ready', () => {
