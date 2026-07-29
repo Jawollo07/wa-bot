@@ -316,10 +316,10 @@ client.on('message', async (msg) => {
         const isAdmin = participant ? (participant.isAdmin || participant.isSuperAdmin) : false;
 
         // Admin-Befehle
-        if (isAdmin) {
-            await handleAdminCommands(msg, chat);
-            if (msg.body.startsWith('!')) return; // Befehle nicht moderieren
-        }
+        // if (isAdmin) {
+        //    await handleAdminCommands(msg, chat);
+        //    if (msg.body.startsWith('!')) return; // Befehle nicht moderieren
+        // }
 
         const settings = await getGroupSettings(groupId);
         let violationReason = null;
