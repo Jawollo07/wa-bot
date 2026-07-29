@@ -1,8 +1,7 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
 const mysql = require('mysql2/promise');
 const QRCode = require('qrcode');
-
+const qrcodeTerminal = require('qrcode-terminal');
 // --- GLOBALE KONFIGURATION ---
 const CONFIG = {
     // MySQL Zugangsdaten
