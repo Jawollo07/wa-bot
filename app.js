@@ -7,9 +7,9 @@ const CONFIG = {
     // MySQL Zugangsdaten
     db: {
         host: '192.168.10.2',
-        user: 'u28_53RgDoRlUI',
-        password: 'bPp4VKjVBKOjx!cV=nvcN1hi',
-        database: 's28_wa-bot',
+        user: 'u28_C4mFdwzqFJ',
+        password: 'eVJnFYAx^DTk.jpzNbqWhZ5i',
+        database: 's28_wa_bot',
         port: 3306
     },
     // Standard-Einstellungen für neue Gruppen
