@@ -17,6 +17,7 @@ const CONFIG = {
     },
     // Standard-Einstellungen für neue Gruppen
     defaultSettings: {
+        isActive: false,
         maxWarnings: 3,
         allowLinks: false,
         allowStickers: false,
@@ -38,12 +39,11 @@ const CONFIG = {
 
 let dbPool;
 let loadedBadWords = [];
-let pairingCodeRequested = false;
-// In-Memory Spam-Tracker: Map<"groupId_userId", Array<timestamp>>
 const messageTimestamps = new Map();
+let pairingCodeRequested = false;
 
 /**
- * Initialisiert die Datenbank und legt alle benötigten Tabellen an
+ * Initialisiert die Datenbank
  */
 async function initDatabase() {
     try {
@@ -54,7 +54,6 @@ async function initDatabase() {
             queueLimit: 0
         });
 
-        // 1. Schimpfwörter-Tabelle
         await dbPool.query(`
             CREATE TABLE IF NOT EXISTS bad_words (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -62,7 +61,6 @@ async function initDatabase() {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         `);
 
-        // 2. Verwarnungen-Tabelle
         await dbPool.query(`
             CREATE TABLE IF NOT EXISTS warnings (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -74,10 +72,11 @@ async function initDatabase() {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         `);
 
-        // 3. Gruppen-Einstellungen
+        // Spalte is_active hinzugefügt
         await dbPool.query(`
             CREATE TABLE IF NOT EXISTS group_settings (
                 group_id VARCHAR(191) PRIMARY KEY,
+                is_active TINYINT(1) DEFAULT 0,
                 allow_links TINYINT(1) DEFAULT 0,
                 allow_stickers TINYINT(1) DEFAULT 0,
                 anti_spam TINYINT(1) DEFAULT 1,
@@ -85,7 +84,6 @@ async function initDatabase() {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         `);
 
-        // 4. Audit-Log (Protokoll)
         await dbPool.query(`
             CREATE TABLE IF NOT EXISTS mod_logs (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -97,16 +95,13 @@ async function initDatabase() {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         `);
 
-        console.log('✅ MySQL-Datenbank & Tabellen erfolgreich initialisiert!');
+        console.log('✅ MySQL-Datenbank erfolgreich initialisiert!');
     } catch (error) {
         console.error('❌ Fehler bei der MySQL-Initialisierung:', error);
         process.exit(1);
     }
 }
 
-/**
- * Lädt Schimpfwörter von GitHub und gleicht sie mit der DB ab
- */
 async function syncAndLoadBadWords() {
     console.log('🔄 Synchronisiere Schimpfwörter...');
     const wordsSet = new Set();
@@ -115,7 +110,6 @@ async function syncAndLoadBadWords() {
         try {
             const response = await fetch(url);
             if (!response.ok) continue;
-
             const data = await response.json();
             let rawWords = Array.isArray(data) ? data : (typeof data === 'object' ? Object.values(data).flat() : []);
 
@@ -147,9 +141,6 @@ async function syncAndLoadBadWords() {
     await reloadBadWordsCache();
 }
 
-/**
- * Lädt alle Wörter aus der DB in den Arbeitsspeicher
- */
 async function reloadBadWordsCache() {
     const [rows] = await dbPool.query('SELECT word FROM bad_words');
     loadedBadWords = rows.map(r => r.word);
@@ -157,27 +148,29 @@ async function reloadBadWordsCache() {
 }
 
 /**
- * Holt oder erstellt Gruppen-Einstellungen aus MySQL
+ * Holt oder erstellt Gruppen-Einstellungen
  */
 async function getGroupSettings(groupId) {
     const [rows] = await dbPool.query('SELECT * FROM group_settings WHERE group_id = ?', [groupId]);
     
     if (rows.length === 0) {
         await dbPool.query(
-            'INSERT INTO group_settings (group_id, allow_links, allow_stickers, anti_spam, max_warnings) VALUES (?, ?, ?, ?, ?)',
+            'INSERT INTO group_settings (group_id, is_active, allow_links, allow_stickers, anti_spam, max_warnings) VALUES (?, ?, ?, ?, ?, ?)',
             [
                 groupId, 
+                CONFIG.defaultSettings.isActive ? 1 : 0,
                 CONFIG.defaultSettings.allowLinks ? 1 : 0, 
                 CONFIG.defaultSettings.allowStickers ? 1 : 0, 
                 CONFIG.defaultSettings.antiSpam ? 1 : 0, 
                 CONFIG.defaultSettings.maxWarnings
             ]
         );
-        return { ...CONFIG.defaultSettings, group_id: groupId };
+        return { ...CONFIG.defaultSettings, groupId };
     }
 
     return {
         groupId: rows[0].group_id,
+        isActive: Boolean(rows[0].is_active),
         allowLinks: Boolean(rows[0].allow_links),
         allowStickers: Boolean(rows[0].allow_stickers),
         antiSpam: Boolean(rows[0].anti_spam),
@@ -185,9 +178,6 @@ async function getGroupSettings(groupId) {
     };
 }
 
-/**
- * Protokolliert Aktionen im Moderations-Log
- */
 async function logAction(groupId, userId, action, reason) {
     await dbPool.query(
         'INSERT INTO mod_logs (group_id, user_id, action, reason) VALUES (?, ?, ?, ?)',
@@ -195,9 +185,6 @@ async function logAction(groupId, userId, action, reason) {
     );
 }
 
-/**
- * Prüft auf Spamming (zu viele Nachrichten in kurzer Zeit)
- */
 function isSpamming(groupId, userId) {
     const key = `${groupId}_${userId}`;
     const now = Date.now();
@@ -210,9 +197,6 @@ function isSpamming(groupId, userId) {
     return timestamps.length > CONFIG.spamLimit.maxMessages;
 }
 
-/**
- * Verwarnungen verwalten
- */
 async function addWarning(groupId, userId) {
     await dbPool.query(`
         INSERT INTO warnings (group_id, user_id, warn_count)
@@ -252,10 +236,9 @@ function containsBadWords(text) {
     });
 }
 
-// WhatsApp Client Init
+// WhatsApp Client mit Remote-Cache-Fix
 const client = new Client({
     authStrategy: new LocalAuth(),
-    // 💡 FIX: Verhindert, dass WhatsApp ungetestete Updates lädt
     webVersionCache: {
         type: 'remote',
         remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version-historical/main/html/2.2412.54.html'
@@ -273,68 +256,72 @@ const client = new Client({
     }
 });
 
+// Kopplungscode-Logik
 client.on('qr', async () => {
     if (!pairingCodeRequested) {
         pairingCodeRequested = true;
 
         if (!CONFIG.phoneNumber || CONFIG.phoneNumber === '491701234567') {
-            console.error('❌ FEHLER: Bitte trage zuerst deine echte Telefonnummer in CONFIG.phoneNumber ein!');
+            console.error('❌ FEHLER: Bitte trage zuerst deine echte Telefonnummer ein!');
             return;
         }
 
         try {
-            // Anforderung des 8-stelligen Kopplungscodes
             const code = await client.requestPairingCode(CONFIG.phoneNumber);
-            
             console.log('\n==================================================');
             console.log(`🔑 DEIN KOPPLUNGSCODE:  ${code}`);
             console.log('==================================================\n');
-            console.log('👉 So verknüpfst du den Bot auf deinem Handy:');
-            console.log('1. Öffne WhatsApp auf deinem Smartphone.');
-            console.log('2. Gehe zu "Einstellungen" > "Verknüpfte Geräte".');
-            console.log('3. Tippe auf "Gerät verknüpfen".');
-            console.log('4. Wähle unten "Stattdessen mit Telefonnummer verknüpfen".');
-            console.log(`5. Gib diesen Code ein: ${code}\n`);
         } catch (err) {
             console.error('❌ Fehler beim Anfordern des Kopplungscodes:', err);
         }
     }
 });
+
 client.on('ready', () => {
-    console.log('🤖 Moderations-Bot ist einsatzbereit!');
+    console.log('🤖 Moderations-Bot ist erfolgreich verbunden und einsatzbereit!');
 });
 
+// --- HAUPT LOGIK FÜR NACHRICHTEN ---
 client.on('message', async (msg) => {
     if (!msg.from.endsWith('@g.us')) return;
 
     try {
         const chat = await msg.getChat();
+        if (!chat) return;
+
         const groupId = chat.id._serialized;
         const senderId = msg.author || msg.from;
-        console.log(`Gruppe: "${chat.name}" | ID: ${groupId}`);
+
         const participant = chat.participants.find(p => p.id._serialized === senderId);
         const isAdmin = participant ? (participant.isAdmin || participant.isSuperAdmin) : false;
 
-        // Admin-Befehle
-        // if (isAdmin) {
-        //    await handleAdminCommands(msg, chat);
-        //    if (msg.body.startsWith('!')) return; // Befehle nicht moderieren
-        // }
-
         const settings = await getGroupSettings(groupId);
+
+        // 1. Befehle von Admins (funktionieren IMMER, um den Bot einschalten zu können)
+        if (isAdmin && msg.body.startsWith('!')) {
+            const handled = await handleAdminCommands(msg, chat, settings);
+            if (handled) return;
+        }
+
+        // 2. DYNAMISCHE PRÜFUNG: Ist der Bot in dieser Gruppe überhaupt aktiv?
+        if (!settings.isActive) {
+            return; // Bot tut in dieser Gruppe nichts!
+        }
+
+        // 3. Wenn der Absender ein Admin ist, wird er nicht moderiert
+        if (isAdmin) return;
+
+        // 4. Moderations-Checks für normale Gruppenmitglieder
         let violationReason = null;
 
-        // 1. SPAM-SCHUTZ
         if (settings.antiSpam && isSpamming(groupId, senderId)) {
             violationReason = 'Spam-Schutz: Zu viele Nachrichten in kurzer Zeit.';
         }
 
-        // 2. STICKER-SCHUTZ
         if (!violationReason && !settings.allowStickers && msg.type === 'sticker') {
             violationReason = 'Sticker sind in dieser Gruppe deaktiviert.';
         }
 
-        // 3. LINK-SCHUTZ
         if (!violationReason && !settings.allowLinks && msg.body) {
             const hasLink = /(https?:\/\/[^\s]+|chat\.whatsapp\.com\/[a-zA-Z0-9]+)/i.test(msg.body);
             if (hasLink) {
@@ -342,26 +329,21 @@ client.on('message', async (msg) => {
             }
         }
 
-        // 4. SCHIMPF WORT-FILTER
         if (!violationReason && msg.body) {
             if (containsBadWords(msg.body)) {
                 violationReason = 'Unerwünschte Sprache / Schimpfwort erkannt.';
             }
         }
 
-        // Bei Verstoß reagieren
         if (violationReason) {
             await handleViolation(msg, chat, senderId, violationReason, settings.maxWarnings);
         }
 
     } catch (error) {
-        console.error('Fehler bei der Nachrichtenverarbeitung:', error);
+        console.error('⚠️ Fehler bei der Nachrichtenverarbeitung:', error.message);
     }
 });
 
-/**
- * Handhabt Regelverstöße
- */
 async function handleViolation(msg, chat, senderId, reason, maxWarnings) {
     try {
         const groupId = chat.id._serialized;
@@ -381,7 +363,6 @@ async function handleViolation(msg, chat, senderId, reason, maxWarnings) {
             await chat.removeParticipants([senderId]);
             await resetWarnings(groupId, senderId);
             await logAction(groupId, senderId, 'KICK', 'Maximale Verwarnungen erreicht');
-            console.log(`User ${senderId} gekickt aus ${chat.name}.`);
         } else {
             await chat.sendMessage(
                 `⚠️ ${mention}, deine Nachricht wurde entfernt.\n` +
@@ -394,47 +375,68 @@ async function handleViolation(msg, chat, senderId, reason, maxWarnings) {
     }
 }
 
-/**
- * Erweitere Admin-Befehle
- */
-async function handleAdminCommands(msg, chat) {
+// --- ADMIN BEFEHLE ---
+async function handleAdminCommands(msg, chat, settings) {
     const text = msg.body.trim();
     const groupId = chat.id._serialized;
     const args = text.split(' ');
     const command = args[0].toLowerCase();
 
-    // Hilfe
+    // 🟢 BOT AKTIVIEREN / DEAKTIVIEREN
+    if (command === '!bot') {
+        const action = args[1] ? args[1].toLowerCase() : '';
+
+        if (action === 'on') {
+            await dbPool.query('UPDATE group_settings SET is_active = 1 WHERE group_id = ?', [groupId]);
+            await msg.reply('🟢 **Bot aktiviert!** Ab sofort verwalte ich diese Gruppe.');
+            return true;
+        } else if (action === 'off') {
+            await dbPool.query('UPDATE group_settings SET is_active = 0 WHERE group_id = ?', [groupId]);
+            await msg.reply('🔴 **Bot deaktiviert!** Ich pausiere in dieser Gruppe.');
+            return true;
+        } else if (action === 'status') {
+            await msg.reply(`ℹ️ Bot-Status in dieser Gruppe: **${settings.isActive ? '🟢 AKTIV' : '🔴 INAKTIV'}**`);
+            return true;
+        } else {
+            await msg.reply('Nutze: `!bot on`, `!bot off` oder `!bot status`');
+            return true;
+        }
+    }
+
+    // Wenn der Bot in dieser Gruppe deaktiviert ist, reagiert er auf keine weiteren Admin-Befehle
+    if (!settings.isActive) return false;
+
     if (command === '!help') {
         await msg.reply(
             `🛠 **Erweiterte Moderations-Befehle:**\n\n` +
+            `• \`!bot on / off / status\` - Bot aktivieren/deaktivieren\n` +
             `• \`!settings\` - Zeigt aktuelle Gruppen-Einstellungen\n` +
             `• \`!toggle links\` - Links erlauben/verbieten\n` +
             `• \`!toggle stickers\` - Sticker erlauben/verbieten\n` +
             `• \`!toggle antispam\` - Anti-Spam ein-/ausschalten\n` +
             `• \`!addword <Wort>\` - Neues Wort sperren\n` +
-            `• \`!delword <Wort>\` - Wort aus der Sperrliste entfernen\n` +
-            `• \`!warns @User\` - Verwarnungen eines Nutzers abfragen\n` +
+            `• \`!delword <Wort>\` - Wort entfernen\n` +
+            `• \`!warns @User\` - Verwarnungen abfragen\n` +
             `• \`!resetwarns @User\` - Verwarnungen zurücksetzen\n` +
             `• \`!kick @User\` - Nutzer manuell kicken`
         );
+        return true;
     }
 
-    // Einstellungen anzeigen
     if (command === '!settings') {
-        const s = await getGroupSettings(groupId);
         await msg.reply(
             `⚙️ **Gruppen-Einstellungen:**\n\n` +
-            `• Links erlaubt: ${s.allowLinks ? '✅ Ja' : '❌ Nein'}\n` +
-            `• Sticker erlaubt: ${s.allowStickers ? '✅ Ja' : '❌ Nein'}\n` +
-            `• Anti-Spam aktiv: ${s.antiSpam ? '✅ Ja' : '❌ Nein'}\n` +
-            `• Max. Verwarnungen: ${s.maxWarnings}`
+            `• Status: **${settings.isActive ? '🟢 Aktiv' : '🔴 Inaktiv'}**\n` +
+            `• Links erlaubt: ${settings.allowLinks ? '✅ Ja' : '❌ Nein'}\n` +
+            `• Sticker erlaubt: ${settings.allowStickers ? '✅ Ja' : '❌ Nein'}\n` +
+            `• Anti-Spam aktiv: ${settings.antiSpam ? '✅ Ja' : '❌ Nein'}\n` +
+            `• Max. Verwarnungen: ${settings.maxWarnings}`
         );
+        return true;
     }
 
-    // Toggles für Einstellungen
     if (command === '!toggle' && args[1]) {
         const option = args[1].toLowerCase();
-        const settings = await getGroupSettings(groupId);
 
         if (option === 'links') {
             const newVal = !settings.allowLinks;
@@ -449,25 +451,25 @@ async function handleAdminCommands(msg, chat) {
             await dbPool.query('UPDATE group_settings SET anti_spam = ? WHERE group_id = ?', [newVal ? 1 : 0, groupId]);
             await msg.reply(`✅ Anti-Spam ist nun ${newVal ? '**aktiviert**' : '**deaktiviert**'}.`);
         }
+        return true;
     }
 
-    // Wörter dynamisch hinzufügen
     if (command === '!addword' && args[1]) {
         const newWord = args[1].toLowerCase().trim();
         await dbPool.query('INSERT IGNORE INTO bad_words (word) VALUES (?)', [newWord]);
         await reloadBadWordsCache();
-        await msg.reply(`✅ Das Wort **"${newWord}"** wurde zur Sperrliste hinzugefügt.`);
+        await msg.reply(`✅ Das Wort **"${newWord}"** wurde gesperrt.`);
+        return true;
     }
 
-    // Wörter dynamisch entfernen
     if (command === '!delword' && args[1]) {
         const wordToRemove = args[1].toLowerCase().trim();
         await dbPool.query('DELETE FROM bad_words WHERE word = ?', [wordToRemove]);
         await reloadBadWordsCache();
-        await msg.reply(`✅ Das Wort **"${wordToRemove}"** wurde aus der Sperrliste entfernt.`);
+        await msg.reply(`✅ Das Wort **"${wordToRemove}"** wurde freigegeben.`);
+        return true;
     }
 
-    // Verwarnungen abfragen
     if (command === '!warns') {
         const mentions = await msg.getMentions();
         if (mentions.length > 0) {
@@ -475,9 +477,9 @@ async function handleAdminCommands(msg, chat) {
             const count = await getWarningCount(groupId, target.id._serialized);
             await msg.reply(`ℹ️ @${target.number} hat aktuell **${count}** Verwarnung(en).`);
         }
+        return true;
     }
 
-    // Verwarnungen zurücksetzen
     if (command === '!resetwarns') {
         const mentions = await msg.getMentions();
         if (mentions.length > 0) {
@@ -486,9 +488,9 @@ async function handleAdminCommands(msg, chat) {
             await logAction(groupId, target.id._serialized, 'RESET_WARNS', 'Manuell durch Admin');
             await msg.reply(`✅ Verwarnungen für @${target.number} wurden zurückgesetzt.`);
         }
+        return true;
     }
 
-    // Nutzer kicken
     if (command === '!kick') {
         const mentions = await msg.getMentions();
         if (mentions.length > 0) {
@@ -498,10 +500,12 @@ async function handleAdminCommands(msg, chat) {
             await logAction(groupId, target.id._serialized, 'KICK', 'Manuell durch Admin');
             await msg.reply(`⛔ @${target.number} wurde vom Admin gekickt.`);
         }
+        return true;
     }
+
+    return false;
 }
 
-// Bot starten
 async function startBot() {
     await initDatabase();
     await syncAndLoadBadWords();
@@ -509,3 +513,4 @@ async function startBot() {
 }
 
 startBot();
+
