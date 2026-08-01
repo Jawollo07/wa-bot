@@ -2,23 +2,17 @@
   "name": "wa-bot",
   "version": "2.0.0",
   "description": "",
-  "homepage": "https://github.com/Jawollo07/wa-bot#readme",
-  "bugs": {
-    "url": "https://github.com/Jawollo07/wa-bot/issues"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/Jawollo07/wa-bot.git"
-  },
   "license": "ISC",
-  "author": "",
   "type": "commonjs",
   "main": "app.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
-    "whatsapp-web.js": "https://github.com/pedroslopez/whatsapp-web.js/tarball/main",
-    "mysql2": "^3.9.0"
+    "whatsapp-web.js": "^1.26.0",
+    "mysql2": "^3.9.0",
+    "dotenv": "^16.4.5",
+    "qrcode-terminal": "^0.12.0",
+    "qrcode": "^1.5.3"
   }
 }
