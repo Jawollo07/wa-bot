@@ -1,6 +1,6 @@
 {
   "name": "wa-bot",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "",
   "homepage": "https://github.com/Jawollo07/wa-bot#readme",
   "bugs": {
@@ -16,5 +16,9 @@
   "main": "app.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "whatsapp-web.js": "https://github.com/pedroslopez/whatsapp-web.js/tarball/main",
+    "mysql2": "^3.9.0"
   }
 }
