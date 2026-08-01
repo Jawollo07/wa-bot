@@ -1,6 +1,14 @@
 require('dotenv').config();
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const mysql = require('mysql2/promise');
+const { execSync } = require('child_process');
+
+try {
+    console.log('🔄 Prüfe Chrome-Installation für Puppeteer...');
+    execSync('npx puppeteer browsers install chrome', { stdio: 'inherit' });
+} catch (error) {
+    console.error('❌ Fehler beim Installieren von Chrome:', error);
+}
 
 const CONFIG = {
     phoneNumber: process.env.PHONE_NUMBER,
@@ -228,10 +236,19 @@ function containsBadWords(text) {
 // --- WHATSAPP CLIENT INITIALISIERUNG ---
 const client = new Client({
     authStrategy: new LocalAuth(),
-    webVersionCache: { type: 'remote', remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version-historical/main/html/2.2412.54.html' },
-    puppeteer: { args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote', '--disable-gpu'] }
+    puppeteer: {
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu'
+        ]
+    }
 });
-
 client.on('qr', async () => {
     if (!pairingCodeRequested && CONFIG.phoneNumber) {
         pairingCodeRequested = true;
