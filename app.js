@@ -59,7 +59,6 @@ const CONFIG = {
         timeFrameMs: Number(process.env.SPAM_TIMEFRAME_MS) || 5000
     },
     wordUrls: [
-        'https://raw.githubusercontent.com/AdvancedPlugins/Chat/main/swear%20words/en.json',
         'https://raw.githubusercontent.com/AdvancedPlugins/Chat/main/swear%20words/de.json',
     ]
 };
