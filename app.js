@@ -74,7 +74,6 @@ function normalizePhone(id) {
     return String(id || '').replace(/\D/g, '');
 }
 
-/** Owner nur bei klarer Nummern-Übereinstimmung (keine Substring-False-Positives) */
 function isBotOwner(senderId) {
     if (!senderId) return false;
     const num = normalizePhone(senderId);
@@ -446,34 +445,9 @@ client.on('message', async (msg) => {
     }
 });
 
+const safeDeleteMessageImpl = require('./safe_delete');
 async function safeDeleteMessage(msg, groupId) {
-    const attempts = [];
-    attempts.push(async () => { if (msg.delete) await msg.delete(true); });
-    attempts.push(async () => { if (msg.delete) await msg.delete(false); });
-    attempts.push(async () => {
-        if (!client.pupPage || !msg.id) throw new Error('no pupPage');
-        const msgId = msg.id._serialized || msg.id;
-        await client.pupPage.evaluate(async (id) => {
-            const m = window.Store && window.Store.Msg && (window.Store.Msg.get(id) || window.Store.Msg.get(String(id)));
-            if (!m) throw new Error('Msg not in Store');
-            if (window.Store.Msg.sendDelete) await window.Store.Msg.sendDelete(m);
-            else if (window.WWebJS && window.WWebJS.sendDelete) await window.WWebJS.sendDelete(m);
-            else throw new Error('No delete API');
-        }, msgId);
-    });
-    let lastErr;
-    for (let i = 0; i < attempts.length; i++) {
-        try {
-            await attempts[i]();
-            log('🗑️ Nachricht gelöscht (Strategie ' + (i + 1) + ')');
-            return true;
-        } catch (e) {
-            lastErr = e;
-        }
-        await new Promise(r => setTimeout(r, 250 * (i + 1)));
-    }
-    console.error('Löschen fehlgeschlagen:', lastErr && lastErr.message || lastErr);
-    return false;
+    return safeDeleteMessageImpl(client, msg, groupId, log);
 }
 
 async function handleViolation(msg, chat, groupId, senderId, reason, maxWarnings, isAdmin) {
@@ -533,7 +507,7 @@ async function handleAdminCommands(msg, chat, settings, groupId) {
         return true;
     }
     if (command === p + 'info') {
-        await safeReply(msg, groupId, '🤖 **wa-bot v2.1.0**\n• Uptime: ' + formatUptime(Date.now() - botStartTime) + '\n• Nachrichten (Session): ' + stats.messages + '\n• Verstöße (Session): ' + stats.violations + '\n• Befehle (Session): ' + stats.commands + '\n• Schimpfwörter: ' + loadedBadWords.length + '\n• Gruppe: ' + (settings.isActive ? '🟢 aktiv' : '🔴 inaktiv'));
+        await safeReply(msg, groupId, '🤖 **wa-bot v2.1.0**\n• Uptime: ' + formatUptime(Date.now() - botStartTime) + '\n• Nachrichten: ' + stats.messages + '\n• Verstöße: ' + stats.violations + '\n• Befehle: ' + stats.commands + '\n• Schimpfwörter: ' + loadedBadWords.length + '\n• Gruppe: ' + (settings.isActive ? '🟢 aktiv' : '🔴 inaktiv'));
         return true;
     }
     if (command === p + 'stats') {
@@ -547,7 +521,7 @@ async function handleAdminCommands(msg, chat, settings, groupId) {
     if (command === p + 'lock') {
         if (chat && chat.setMessagesAdminsOnly) {
             await chat.setMessagesAdminsOnly(true);
-            await safeReply(msg, groupId, '🔒 **Gruppe gesperrt.** Nur noch Admins können schreiben.');
+            await safeReply(msg, groupId, '🔒 **Gruppe gesperrt.**');
         } else await safeReply(msg, groupId, '⚠️ Chat-Objekt nicht verfügbar.');
         return true;
     }
@@ -617,7 +591,7 @@ async function handleAdminCommands(msg, chat, settings, groupId) {
     if (command === p + 'setwelcome') {
         const text = args.slice(1).join(' ').trim();
         if (!text) {
-            await safeReply(msg, groupId, '⚠️ Nutzung: `' + p + 'setwelcome Willkommen @user!`\nAktuell: ' + settings.welcomeMsg);
+            await safeReply(msg, groupId, '⚠️ Nutzung: `' + p + 'setwelcome ...`\nAktuell: ' + settings.welcomeMsg);
             return true;
         }
         await dbPool.query('UPDATE group_settings SET welcome_msg = ?, welcome_active = 1 WHERE group_id = ?', [text, groupId]);
@@ -627,7 +601,7 @@ async function handleAdminCommands(msg, chat, settings, groupId) {
     if (command === p + 'setleave') {
         const text = args.slice(1).join(' ').trim();
         if (!text) {
-            await safeReply(msg, groupId, '⚠️ Nutzung: `' + p + 'setleave Tschüss!`\nAktuell: ' + settings.leaveMsg);
+            await safeReply(msg, groupId, '⚠️ Nutzung: `' + p + 'setleave ...`\nAktuell: ' + settings.leaveMsg);
             return true;
         }
         await dbPool.query('UPDATE group_settings SET leave_msg = ?, welcome_active = 1 WHERE group_id = ?', [text, groupId]);
@@ -705,7 +679,7 @@ async function handleAdminCommands(msg, chat, settings, groupId) {
         return true;
     }
     if (command === p + 'help') {
-        await safeReply(msg, groupId, '🛠 **Admin-Befehle**\n\n• `' + p + 'bot on/off`\n• `' + p + 'settings` / `' + p + 'stats` / `' + p + 'info` / `' + p + 'ping`\n• `' + p + 'toggle <links|stickers|images|videos|audios|antispam|welcome>`\n• `' + p + 'maxwarns <1-20>`\n• `' + p + 'setwelcome <text>` / `' + p + 'setleave <text>`\n• `' + p + 'lock` / `' + p + 'unlock`\n• `' + p + 'mute @User` / `' + p + 'unmute @User` / `' + p + 'muted`\n• `' + p + 'kick @User`\n• `' + p + 'warns @User` / `' + p + 'resetwarns @User` / `' + p + 'clearwarns`\n• `' + p + 'addword <w>` / `' + p + 'delword <w>`');
+        await safeReply(msg, groupId, '🛠 **Admin-Befehle**\n\n• `' + p + 'bot on/off`\n• `' + p + 'settings` / `' + p + 'stats` / `' + p + 'info` / `' + p + 'ping`\n• `' + p + 'toggle <links|stickers|images|videos|audios|antispam|welcome>`\n• `' + p + 'maxwarns <1-20>`\n• `' + p + 'setwelcome` / `' + p + 'setleave`\n• `' + p + 'lock` / `' + p + 'unlock`\n• `' + p + 'mute` / `' + p + 'unmute` / `' + p + 'muted`\n• `' + p + 'kick`\n• `' + p + 'warns` / `' + p + 'resetwarns` / `' + p + 'clearwarns`\n• `' + p + 'addword` / `' + p + 'delword`');
         return true;
     }
     return false;
