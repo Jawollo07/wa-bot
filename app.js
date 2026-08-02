@@ -237,28 +237,45 @@ async function reloadBadWordsCache() {
     log('✅ ' + loadedBadWords.length + ' Schimpfwörter geladen (Index: ' + profanity.getIndexSize() + ' Formen).');
 }
 
+function dbFlag(v, defaultVal = false) {
+    if (v === undefined || v === null) return defaultVal;
+    if (typeof v === 'boolean') return v;
+    if (typeof v === 'number') return v !== 0;
+    if (typeof v === 'string') return v === '1' || v.toLowerCase() === 'true';
+    if (typeof Buffer !== 'undefined' && Buffer.isBuffer(v)) return v[0] === 1;
+    return Boolean(v);
+}
+
 async function getGroupSettings(groupId) {
     const [rows] = await dbPool.query('SELECT * FROM group_settings WHERE group_id = ?', [groupId]);
     if (rows.length === 0) {
         const d = CONFIG.defaultSettings;
         await dbPool.query(
-            'INSERT INTO group_settings (group_id, is_active, allow_links, allow_stickers, allow_images, allow_videos, allow_audios, anti_spam, max_warnings, welcome_active, welcome_msg, leave_msg) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            'INSERT IGNORE INTO group_settings (group_id, is_active, allow_links, allow_stickers, allow_images, allow_videos, allow_audios, anti_spam, max_warnings, welcome_active, welcome_msg, leave_msg) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             [groupId, d.isActive ? 1 : 0, d.allowLinks ? 1 : 0, d.allowStickers ? 1 : 0, d.allowImages ? 1 : 0, d.allowVideos ? 1 : 0, d.allowAudios ? 1 : 0, d.antiSpam ? 1 : 0, d.maxWarnings, d.welcomeActive ? 1 : 0, d.welcomeMsg, d.leaveMsg]
         );
+        const [again] = await dbPool.query('SELECT * FROM group_settings WHERE group_id = ?', [groupId]);
+        if (again.length) {
+            const r = again[0];
+            return mapSettingsRow(r);
+        }
         return { ...d, groupId };
     }
-    const r = rows[0];
+    return mapSettingsRow(rows[0]);
+}
+
+function mapSettingsRow(r) {
     return {
         groupId: r.group_id,
-        isActive: Boolean(r.is_active),
-        allowLinks: Boolean(r.allow_links),
-        allowStickers: Boolean(r.allow_stickers),
-        allowImages: r.allow_images === undefined ? true : Boolean(r.allow_images),
-        allowVideos: r.allow_videos === undefined ? true : Boolean(r.allow_videos),
-        allowAudios: r.allow_audios === undefined ? true : Boolean(r.allow_audios),
-        antiSpam: r.anti_spam === undefined ? true : Boolean(r.anti_spam),
-        maxWarnings: r.max_warnings != null ? r.max_warnings : CONFIG.defaultSettings.maxWarnings,
-        welcomeActive: Boolean(r.welcome_active),
+        isActive: dbFlag(r.is_active, false),
+        allowLinks: dbFlag(r.allow_links, false),
+        allowStickers: dbFlag(r.allow_stickers, false),
+        allowImages: dbFlag(r.allow_images, true),
+        allowVideos: dbFlag(r.allow_videos, true),
+        allowAudios: dbFlag(r.allow_audios, true),
+        antiSpam: dbFlag(r.anti_spam, true),
+        maxWarnings: r.max_warnings != null ? Number(r.max_warnings) : CONFIG.defaultSettings.maxWarnings,
+        welcomeActive: dbFlag(r.welcome_active, false),
         welcomeMsg: r.welcome_msg || CONFIG.defaultSettings.welcomeMsg,
         leaveMsg: r.leave_msg || CONFIG.defaultSettings.leaveMsg
     };
@@ -449,11 +466,16 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
         const action = args[1]?.toLowerCase();
         if (action === 'on' || action === 'off') {
             const state = action === 'on' ? 1 : 0;
-            await dbPool.query('UPDATE group_settings SET is_active = ? WHERE group_id = ?', [state, groupId]);
+            await dbPool.query(
+                'INSERT INTO group_settings (group_id, is_active) VALUES (?, ?) ON DUPLICATE KEY UPDATE is_active = VALUES(is_active)',
+                [groupId, state]
+            );
+            log('⚙️ is_active=' + state + ' für ' + groupId);
             await reply(state ? '🟢 **Bot aktiviert!**' : '🔴 **Bot deaktiviert!**');
             return true;
         }
-        await reply('ℹ️ Status: **' + (settings.isActive ? '🟢 AKTIV' : '🔴 INAKTIV') + '**');
+        const fresh = await getGroupSettings(groupId);
+        await reply('ℹ️ Status: **' + (fresh.isActive ? '🟢 AKTIV' : '🔴 INAKTIV') + '**\nGruppe: `' + groupId + '`');
         return true;
     }
     if (command === p + 'ping') {
@@ -773,7 +795,7 @@ async function onIncomingMessage(msg) {
             }
         }
         if (!settings.isActive) {
-            log('🔴 Bot inaktiv');
+            log('🔴 Bot inaktiv (group=' + groupId + ')');
             return;
         }
         if (await isMuted(groupId, senderId)) {
