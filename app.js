@@ -7,16 +7,15 @@ try {
     console.log('🔄 Prüfe Chrome-Installation für Puppeteer...');
     execSync('npx puppeteer browsers install chrome', { stdio: 'inherit' });
 } catch (error) {
-    console.error('❌ Fehler beim Installieren von Chrome:', error);
+    console.error('❌ Fehler beim Installieren von Chrome:', error.message || error);
 }
 
 const CONFIG = {
     phoneNumber: process.env.PHONE_NUMBER,
-    
+
     allowedGroups: [
     ],
-    
-    // MySQL Zugangsdaten aus der .env laden
+
     db: {
         host: process.env.DB_HOST,
         user: process.env.DB_USER,
@@ -34,17 +33,15 @@ const CONFIG = {
         allowAudios: true,
         antiSpam: true,
         welcomeActive: false,
-        welcomeMsg: "Willkommen in der Gruppe, @user! 👋",
-        leaveMsg: "Ein Nutzer hat die Gruppe verlassen. 😢"
+        welcomeMsg: 'Willkommen in der Gruppe, @user! 👋',
+        leaveMsg: 'Ein Nutzer hat die Gruppe verlassen. 😢'
     },
-    
-    // Anti-Spam Konfiguration
+
     spamLimit: {
         maxMessages: 5,
         timeFrameMs: 5000
     },
-    
-    // GitHub-Listen zum Erst-Import
+
     wordUrls: [
         'https://raw.githubusercontent.com/AdvancedPlugins/Chat/main/swear%20words/en.json',
         'https://raw.githubusercontent.com/AdvancedPlugins/Chat/main/swear%20words/de.json',
@@ -52,6 +49,7 @@ const CONFIG = {
         'https://raw.githubusercontent.com/AdvancedPlugins/Chat/main/swear%20words/es.json'
     ]
 };
+
 let dbPool;
 let loadedBadWords = [];
 const messageTimestamps = new Map();
@@ -66,11 +64,45 @@ process.on('uncaughtException', (err) => {
 });
 
 /**
+ * Chat mit Retry holen – Workaround für den bekannten Puppeteer "r: r" Fehler
+ * bei getChatById nach WhatsApp-Web-Updates (seit Juli 2026).
+ */
+async function getChatSafe(msg, maxAttempts = 3) {
+    let lastError;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            const chat = await msg.getChat();
+            if (chat) return chat;
+        } catch (err) {
+            lastError = err;
+            const msgText = err?.message || String(err);
+            console.log(`⚠️ getChat Versuch ${attempt}/${maxAttempts} fehlgeschlagen: ${msgText}`);
+            if (attempt < maxAttempts) {
+                await new Promise(r => setTimeout(r, 600 * attempt));
+            }
+        }
+    }
+    // Fallback: direkt über Client (manchmal stabiler)
+    try {
+        const chat = await client.getChatById(msg.from);
+        if (chat) return chat;
+    } catch (err) {
+        lastError = err;
+    }
+    throw lastError || new Error('Chat konnte nicht geladen werden');
+}
+
+/**
  * Initialisiert die erweiterte Datenbank
  */
 async function initDatabase() {
     try {
-        dbPool = mysql.createPool({ ...CONFIG.db, waitForConnections: true, connectionLimit: 10, queueLimit: 0 });
+        dbPool = mysql.createPool({
+            ...CONFIG.db,
+            waitForConnections: true,
+            connectionLimit: 10,
+            queueLimit: 0
+        });
 
         await dbPool.query(`
             CREATE TABLE IF NOT EXISTS bad_words (
@@ -90,7 +122,6 @@ async function initDatabase() {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         `);
 
-        // Erweiterte Group-Settings Tabelle
         await dbPool.query(`
             CREATE TABLE IF NOT EXISTS group_settings (
                 group_id VARCHAR(191) PRIMARY KEY,
@@ -119,7 +150,6 @@ async function initDatabase() {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         `);
 
-        // NEU: Tabelle für stummgeschaltete Nutzer
         await dbPool.query(`
             CREATE TABLE IF NOT EXISTS muted_users (
                 group_id VARCHAR(191) NOT NULL,
@@ -136,7 +166,7 @@ async function initDatabase() {
 }
 
 // --- DATENBANK HILFSFUNKTIONEN ---
-async function syncAndLoadBadWords() { /* Bleibt identisch zum Basis-Code */
+async function syncAndLoadBadWords() {
     console.log('🔄 Synchronisiere Schimpfwörter...');
     const wordsSet = new Set();
     for (const url of CONFIG.wordUrls) {
@@ -144,20 +174,31 @@ async function syncAndLoadBadWords() { /* Bleibt identisch zum Basis-Code */
             const response = await fetch(url);
             if (!response.ok) continue;
             const data = await response.json();
-            let rawWords = Array.isArray(data) ? data : (typeof data === 'object' ? Object.values(data).flat() : []);
+            let rawWords = Array.isArray(data)
+                ? data
+                : (typeof data === 'object' ? Object.values(data).flat() : []);
             for (const word of rawWords) {
-                if (typeof word === 'string' && word.trim().length > 1) wordsSet.add(word.trim().toLowerCase());
+                if (typeof word === 'string' && word.trim().length > 1) {
+                    wordsSet.add(word.trim().toLowerCase());
+                }
             }
-        } catch (error) {}
+        } catch (error) {
+            // einzelne Listen-Fehler ignorieren
+        }
     }
     if (wordsSet.size > 0) {
         const connection = await dbPool.getConnection();
         try {
             await connection.beginTransaction();
-            for (const word of wordsSet) { await connection.query('INSERT IGNORE INTO bad_words (word) VALUES (?)', [word]); }
+            for (const word of wordsSet) {
+                await connection.query('INSERT IGNORE INTO bad_words (word) VALUES (?)', [word]);
+            }
             await connection.commit();
-        } catch (err) { await connection.rollback(); } 
-        finally { connection.release(); }
+        } catch (err) {
+            await connection.rollback();
+        } finally {
+            connection.release();
+        }
     }
     await reloadBadWordsCache();
 }
@@ -173,30 +214,47 @@ async function getGroupSettings(groupId) {
     if (rows.length === 0) {
         await dbPool.query(
             `INSERT INTO group_settings (
-                group_id, is_active, allow_links, allow_stickers, allow_images, allow_videos, 
+                group_id, is_active, allow_links, allow_stickers, allow_images, allow_videos,
                 allow_audios, anti_spam, max_warnings, welcome_active, welcome_msg, leave_msg
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
-                groupId, CONFIG.defaultSettings.isActive ? 1 : 0, CONFIG.defaultSettings.allowLinks ? 1 : 0, 
-                CONFIG.defaultSettings.allowStickers ? 1 : 0, CONFIG.defaultSettings.allowImages ? 1 : 0,
-                CONFIG.defaultSettings.allowVideos ? 1 : 0, CONFIG.defaultSettings.allowAudios ? 1 : 0,
-                CONFIG.defaultSettings.antiSpam ? 1 : 0, CONFIG.defaultSettings.maxWarnings,
-                CONFIG.defaultSettings.welcomeActive ? 1 : 0, CONFIG.defaultSettings.welcomeMsg, CONFIG.defaultSettings.leaveMsg
+                groupId,
+                CONFIG.defaultSettings.isActive ? 1 : 0,
+                CONFIG.defaultSettings.allowLinks ? 1 : 0,
+                CONFIG.defaultSettings.allowStickers ? 1 : 0,
+                CONFIG.defaultSettings.allowImages ? 1 : 0,
+                CONFIG.defaultSettings.allowVideos ? 1 : 0,
+                CONFIG.defaultSettings.allowAudios ? 1 : 0,
+                CONFIG.defaultSettings.antiSpam ? 1 : 0,
+                CONFIG.defaultSettings.maxWarnings,
+                CONFIG.defaultSettings.welcomeActive ? 1 : 0,
+                CONFIG.defaultSettings.welcomeMsg,
+                CONFIG.defaultSettings.leaveMsg
             ]
         );
         return { ...CONFIG.defaultSettings, groupId };
     }
     return {
-        groupId: rows[0].group_id, isActive: Boolean(rows[0].is_active), allowLinks: Boolean(rows[0].allow_links),
-        allowStickers: Boolean(rows[0].allow_stickers), allowImages: Boolean(rows[0].allow_images),
-        allowVideos: Boolean(rows[0].allow_videos), allowAudios: Boolean(rows[0].allow_audios),
-        antiSpam: Boolean(rows[0].anti_spam), maxWarnings: rows[0].max_warnings,
-        welcomeActive: Boolean(rows[0].welcome_active), welcomeMsg: rows[0].welcome_msg, leaveMsg: rows[0].leave_msg
+        groupId: rows[0].group_id,
+        isActive: Boolean(rows[0].is_active),
+        allowLinks: Boolean(rows[0].allow_links),
+        allowStickers: Boolean(rows[0].allow_stickers),
+        allowImages: Boolean(rows[0].allow_images),
+        allowVideos: Boolean(rows[0].allow_videos),
+        allowAudios: Boolean(rows[0].allow_audios),
+        antiSpam: Boolean(rows[0].anti_spam),
+        maxWarnings: rows[0].max_warnings,
+        welcomeActive: Boolean(rows[0].welcome_active),
+        welcomeMsg: rows[0].welcome_msg,
+        leaveMsg: rows[0].leave_msg
     };
 }
 
 async function logAction(groupId, userId, action, reason) {
-    await dbPool.query('INSERT INTO mod_logs (group_id, user_id, action, reason) VALUES (?, ?, ?, ?)', [groupId, userId, action, reason]);
+    await dbPool.query(
+        'INSERT INTO mod_logs (group_id, user_id, action, reason) VALUES (?, ?, ?, ?)',
+        [groupId, userId, action, reason]
+    );
 }
 
 function isSpamming(groupId, userId) {
@@ -210,8 +268,15 @@ function isSpamming(groupId, userId) {
 }
 
 async function addWarning(groupId, userId) {
-    await dbPool.query(`INSERT INTO warnings (group_id, user_id, warn_count) VALUES (?, ?, 1) ON DUPLICATE KEY UPDATE warn_count = warn_count + 1`, [groupId, userId]);
-    const [rows] = await dbPool.query('SELECT warn_count FROM warnings WHERE group_id = ? AND user_id = ?', [groupId, userId]);
+    await dbPool.query(
+        `INSERT INTO warnings (group_id, user_id, warn_count) VALUES (?, ?, 1)
+         ON DUPLICATE KEY UPDATE warn_count = warn_count + 1`,
+        [groupId, userId]
+    );
+    const [rows] = await dbPool.query(
+        'SELECT warn_count FROM warnings WHERE group_id = ? AND user_id = ?',
+        [groupId, userId]
+    );
     return rows[0] ? rows[0].warn_count : 1;
 }
 
@@ -219,16 +284,28 @@ async function resetWarnings(groupId, userId) {
     await dbPool.query('DELETE FROM warnings WHERE group_id = ? AND user_id = ?', [groupId, userId]);
 }
 
+async function getWarningCount(groupId, userId) {
+    const [rows] = await dbPool.query(
+        'SELECT warn_count FROM warnings WHERE group_id = ? AND user_id = ?',
+        [groupId, userId]
+    );
+    return rows[0] ? rows[0].warn_count : 0;
+}
+
 async function isMuted(groupId, userId) {
-    const [rows] = await dbPool.query('SELECT 1 FROM muted_users WHERE group_id = ? AND user_id = ?', [groupId, userId]);
+    const [rows] = await dbPool.query(
+        'SELECT 1 FROM muted_users WHERE group_id = ? AND user_id = ?',
+        [groupId, userId]
+    );
     return rows.length > 0;
 }
 
 function containsBadWords(text) {
-    if(!text) return false;
+    if (!text) return false;
     const lowerText = text.toLowerCase();
     return loadedBadWords.some(word => {
-        const regex = new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+        const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(`\\b${escaped}\\b`, 'i');
         return regex.test(lowerText);
     });
 }
@@ -236,7 +313,6 @@ function containsBadWords(text) {
 // --- WHATSAPP CLIENT INITIALISIERUNG ---
 const client = new Client({
     authStrategy: new LocalAuth(),
-    // webVersionCache wurde hier bewusst entfernt!
     puppeteer: {
         args: [
             '--no-sandbox',
@@ -249,39 +325,52 @@ const client = new Client({
         ]
     }
 });
+
 client.on('qr', async () => {
     if (!pairingCodeRequested && CONFIG.phoneNumber) {
         pairingCodeRequested = true;
         try {
             const code = await client.requestPairingCode(CONFIG.phoneNumber);
             console.log(`\n🔑 DEIN KOPPLUNGSCODE: ${code}\n`);
-        } catch (err) { console.error('❌ Fehler Kopplungscode:', err); }
+        } catch (err) {
+            console.error('❌ Fehler Kopplungscode:', err);
+        }
     }
 });
 
-client.on('ready', () => { console.log('🤖 Vollausgestatteter Moderations-Bot ist einsatzbereit!'); });
+client.on('ready', () => {
+    console.log('🤖 Vollausgestatteter Moderations-Bot ist einsatzbereit!');
+});
 
-// --- WELCOME / LEAVE EVENTS (NEU) ---
+// --- WELCOME / LEAVE EVENTS ---
 client.on('group_join', async (notification) => {
-    const groupId = notification.chatId;
-    const settings = await getGroupSettings(groupId);
-    if (!settings.isActive || !settings.welcomeActive) return;
+    try {
+        const groupId = notification.chatId;
+        const settings = await getGroupSettings(groupId);
+        if (!settings.isActive || !settings.welcomeActive) return;
 
-    const chat = await client.getChatById(groupId);
-    for (const userId of notification.recipientIds) {
-        const contact = await client.getContactById(userId);
-        const msg = settings.welcomeMsg.replace('@user', `@${contact.number}`);
-        await chat.sendMessage(msg, { mentions: [contact] });
+        const chat = await client.getChatById(groupId);
+        for (const userId of notification.recipientIds) {
+            const contact = await client.getContactById(userId);
+            const msg = settings.welcomeMsg.replace('@user', `@${contact.number}`);
+            await chat.sendMessage(msg, { mentions: [contact] });
+        }
+    } catch (err) {
+        console.error('Fehler bei group_join:', err.message || err);
     }
 });
 
 client.on('group_leave', async (notification) => {
-    const groupId = notification.chatId;
-    const settings = await getGroupSettings(groupId);
-    if (!settings.isActive || !settings.welcomeActive) return;
+    try {
+        const groupId = notification.chatId;
+        const settings = await getGroupSettings(groupId);
+        if (!settings.isActive || !settings.welcomeActive) return;
 
-    const chat = await client.getChatById(groupId);
-    await chat.sendMessage(settings.leaveMsg);
+        const chat = await client.getChatById(groupId);
+        await chat.sendMessage(settings.leaveMsg);
+    } catch (err) {
+        console.error('Fehler bei group_leave:', err.message || err);
+    }
 });
 
 // --- HAUPT LOGIK FÜR NACHRICHTEN ---
@@ -292,30 +381,38 @@ client.on('message', async (msg) => {
     console.log(`Text: "${msg.body || 'Kein Text (Medien/Sticker)'}"`);
 
     try {
-        console.log('[1] Lade Chat-Datenbank...');
-        const chat = await msg.getChat();
-        if (!chat) return;
-
-        console.log('[2] Lade Einstellungen & Teilnehmer...');
-        const groupId = chat.id._serialized;
+        const groupId = msg.from;
         const senderId = msg.author || msg.from;
+        const text = msg.body || '';
+
+        console.log('[1] Lade Einstellungen...');
         const settings = await getGroupSettings(groupId);
+
+        console.log('[2] Lade Chat (mit Retry)...');
+        let chat;
+        try {
+            chat = await getChatSafe(msg);
+        } catch (err) {
+            console.error('❌ Chat konnte nach mehreren Versuchen nicht geladen werden:', err.message || err);
+            return;
+        }
 
         console.log('[3] Prüfe Admin-Status...');
         const participants = chat.participants || [];
         const participant = participants.find(p => p.id._serialized === senderId);
         const isAdmin = participant ? (participant.isAdmin || participant.isSuperAdmin) : false;
-        
-        // Prüfen, ob der Bot selbst Admin ist
-        const botId = client.info.wid._serialized;
-        const botParticipant = participants.find(p => p.id._serialized === botId);
-        const isBotAdmin = botParticipant ? (botParticipant.isAdmin || botParticipant.isSuperAdmin) : false;
 
-        const text = msg.body || '';
+        const botId = client.info?.wid?._serialized;
+        const botParticipant = botId
+            ? participants.find(p => p.id._serialized === botId)
+            : null;
+        const isBotAdmin = botParticipant
+            ? (botParticipant.isAdmin || botParticipant.isSuperAdmin)
+            : false;
 
         console.log('[4] Verarbeite mögliche Befehle...');
         if (isAdmin && text.startsWith('!')) {
-            const handled = await handleAdminCommands(msg, chat, settings, text);
+            const handled = await handleAdminCommands(msg, chat, settings);
             if (handled) return;
         }
 
@@ -330,7 +427,11 @@ client.on('message', async (msg) => {
                 console.log('⚠️ Kann stummgeschalteten User nicht blockieren: Bot ist kein Admin!');
                 return;
             }
-            await msg.delete(true);
+            try {
+                await msg.delete(true);
+            } catch (e) {
+                console.error('Löschen fehlgeschlagen:', e.message || e);
+            }
             return;
         }
 
@@ -340,15 +441,18 @@ client.on('message', async (msg) => {
         if (settings.antiSpam && isSpamming(groupId, senderId)) {
             violationReason = 'Spam-Schutz: Zu viele Nachrichten.';
         }
-        
+
         if (!violationReason) {
             if (!settings.allowStickers && msg.type === 'sticker') violationReason = 'Sticker deaktiviert.';
             else if (!settings.allowImages && msg.type === 'image') violationReason = 'Bilder deaktiviert.';
             else if (!settings.allowVideos && msg.type === 'video') violationReason = 'Videos deaktiviert.';
-            else if (!settings.allowAudios && (msg.type === 'audio' || msg.type === 'ptt')) violationReason = 'Audios deaktiviert.';
+            else if (!settings.allowAudios && (msg.type === 'audio' || msg.type === 'ptt')) {
+                violationReason = 'Audios deaktiviert.';
+            }
         }
 
-        if (!violationReason && !settings.allowLinks && text && /(https?:\/\/[^\s]+|chat\.whatsapp\.com\/[a-zA-Z0-9]+)/i.test(text)) {
+        if (!violationReason && !settings.allowLinks && text &&
+            /(https?:\/\/[^\s]+|chat\.whatsapp\.com\/[a-zA-Z0-9]+)/i.test(text)) {
             violationReason = 'Links sind nicht gestattet.';
         }
 
@@ -375,25 +479,50 @@ client.on('message', async (msg) => {
 async function handleViolation(msg, chat, senderId, reason, maxWarnings) {
     try {
         const groupId = chat.id._serialized;
-        await msg.delete(true);
+        try {
+            await msg.delete(true);
+        } catch (e) {
+            console.error('Nachricht konnte nicht gelöscht werden:', e.message || e);
+        }
+
         const currentWarns = await addWarning(groupId, senderId);
         await logAction(groupId, senderId, 'WARN', reason);
-        const contact = await msg.getContact();
+
+        let contact;
+        try {
+            contact = await msg.getContact();
+        } catch (e) {
+            contact = { number: senderId.split('@')[0] };
+        }
+
+        const mentionId = contact.id || { _serialized: senderId };
 
         if (currentWarns >= maxWarnings) {
-            await chat.sendMessage(`⛔ @${contact.number} wurde automatisch gekickt.\n**Grund:** Maximale Verwarnungen erreicht.`, { mentions: [contact] });
-            await chat.removeParticipants([senderId]);
+            await chat.sendMessage(
+                `⛔ @${contact.number} wurde automatisch gekickt.\n**Grund:** Maximale Verwarnungen erreicht.`,
+                { mentions: [mentionId] }
+            );
+            try {
+                await chat.removeParticipants([senderId]);
+            } catch (e) {
+                console.error('Kick fehlgeschlagen:', e.message || e);
+            }
             await resetWarnings(groupId, senderId);
             await logAction(groupId, senderId, 'KICK', 'Maximale Verwarnungen erreicht');
         } else {
-            await chat.sendMessage(`⚠️ @${contact.number}, deine Nachricht wurde entfernt.\n**Grund:** ${reason}\n**Verwarnung:** ${currentWarns}/${maxWarnings}`, { mentions: [contact] });
+            await chat.sendMessage(
+                `⚠️ @${contact.number}, deine Nachricht wurde entfernt.\n**Grund:** ${reason}\n**Verwarnung:** ${currentWarns}/${maxWarnings}`,
+                { mentions: [mentionId] }
+            );
         }
-    } catch (err) { console.error('Fehler bei Moderationsaktion:', err); }
+    } catch (err) {
+        console.error('Fehler bei Moderationsaktion:', err);
+    }
 }
 
 // --- ERWEITERTE ADMIN BEFEHLE ---
 async function handleAdminCommands(msg, chat, settings) {
-    const args = msg.body.trim().split(' ');
+    const args = msg.body.trim().split(/\s+/);
     const command = args[0].toLowerCase();
     const groupId = chat.id._serialized;
 
@@ -401,7 +530,10 @@ async function handleAdminCommands(msg, chat, settings) {
         const action = args[1]?.toLowerCase();
         if (action === 'on' || action === 'off') {
             const state = action === 'on' ? 1 : 0;
-            await dbPool.query('UPDATE group_settings SET is_active = ? WHERE group_id = ?', [state, groupId]);
+            await dbPool.query(
+                'UPDATE group_settings SET is_active = ? WHERE group_id = ?',
+                [state, groupId]
+            );
             await msg.reply(state ? '🟢 **Bot aktiviert!**' : '🔴 **Bot deaktiviert!**');
             return true;
         }
@@ -409,14 +541,14 @@ async function handleAdminCommands(msg, chat, settings) {
         return true;
     }
 
-    if (!settings.isActive) return false;
+    if (!settings.isActive && command !== '!bot') return false;
 
-    // --- NEUE COMMANDS ---
     if (command === '!lock') {
         await chat.setMessagesAdminsOnly(true);
         await msg.reply('🔒 **Gruppe gesperrt.** Nur noch Admins können schreiben.');
         return true;
     }
+
     if (command === '!unlock') {
         await chat.setMessagesAdminsOnly(false);
         await msg.reply('🔓 **Gruppe entsperrt.** Alle können wieder schreiben.');
@@ -428,12 +560,26 @@ async function handleAdminCommands(msg, chat, settings) {
         if (mentions.length > 0) {
             const target = mentions[0].id._serialized;
             if (command === '!mute') {
-                await dbPool.query('INSERT IGNORE INTO muted_users (group_id, user_id) VALUES (?, ?)', [groupId, target]);
-                await msg.reply(`🤫 @${mentions[0].number} wurde stummgeschaltet. Alle Nachrichten werden gelöscht.`);
+                await dbPool.query(
+                    'INSERT IGNORE INTO muted_users (group_id, user_id) VALUES (?, ?)',
+                    [groupId, target]
+                );
+                await msg.reply(
+                    `🤫 @${mentions[0].number} wurde stummgeschaltet. Alle Nachrichten werden gelöscht.`,
+                    { mentions: [mentions[0]] }
+                );
             } else {
-                await dbPool.query('DELETE FROM muted_users WHERE group_id = ? AND user_id = ?', [groupId, target]);
-                await msg.reply(`🔊 @${mentions[0].number} darf wieder schreiben.`);
+                await dbPool.query(
+                    'DELETE FROM muted_users WHERE group_id = ? AND user_id = ?',
+                    [groupId, target]
+                );
+                await msg.reply(
+                    `🔊 @${mentions[0].number} darf wieder schreiben.`,
+                    { mentions: [mentions[0]] }
+                );
             }
+        } else {
+            await msg.reply('⚠️ Bitte einen Nutzer markieren: `!mute @User`');
         }
         return true;
     }
@@ -441,15 +587,29 @@ async function handleAdminCommands(msg, chat, settings) {
     if (command === '!toggle' && args[1]) {
         const option = args[1].toLowerCase();
         const validOptions = {
-            'links': 'allow_links', 'stickers': 'allow_stickers', 'images': 'allow_images', 
-            'videos': 'allow_videos', 'audios': 'allow_audios', 'antispam': 'anti_spam', 'welcome': 'welcome_active'
+            links: 'allow_links',
+            stickers: 'allow_stickers',
+            images: 'allow_images',
+            videos: 'allow_videos',
+            audios: 'allow_audios',
+            antispam: 'anti_spam',
+            welcome: 'welcome_active'
         };
-        
+
         if (validOptions[option]) {
             const field = validOptions[option];
-            const newVal = !settings[field.replace(/_([a-z])/g, g => g[1].toUpperCase())];
-            await dbPool.query(`UPDATE group_settings SET ${field} = ? WHERE group_id = ?`, [newVal ? 1 : 0, groupId]);
-            await msg.reply(`✅ Einstellung für **${option}** geändert.`);
+            // camelCase Key aus snake_case ableiten
+            const camelKey = field.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+            // allow_links -> allowLinks
+            const currentVal = settings[camelKey];
+            const newVal = !currentVal;
+            await dbPool.query(
+                `UPDATE group_settings SET ${field} = ? WHERE group_id = ?`,
+                [newVal ? 1 : 0, groupId]
+            );
+            await msg.reply(`✅ Einstellung für **${option}** ist jetzt: ${newVal ? 'AN' : 'AUS'}`);
+        } else {
+            await msg.reply('⚠️ Ungültige Option. Verfügbar: links, stickers, images, videos, audios, antispam, welcome');
         }
         return true;
     }
@@ -467,6 +627,82 @@ async function handleAdminCommands(msg, chat, settings) {
         return true;
     }
 
+    if (command === '!kick') {
+        const mentions = await msg.getMentions();
+        if (mentions.length === 0) {
+            await msg.reply('⚠️ Bitte einen Nutzer markieren: `!kick @User`');
+            return true;
+        }
+        const target = mentions[0].id._serialized;
+        try {
+            await chat.removeParticipants([target]);
+            await logAction(groupId, target, 'KICK', 'Manueller Kick durch Admin');
+            await msg.reply(`👢 @${mentions[0].number} wurde entfernt.`, { mentions: [mentions[0]] });
+        } catch (e) {
+            await msg.reply(`❌ Kick fehlgeschlagen: ${e.message || e}`);
+        }
+        return true;
+    }
+
+    if (command === '!warns') {
+        const mentions = await msg.getMentions();
+        if (mentions.length === 0) {
+            await msg.reply('⚠️ Bitte einen Nutzer markieren: `!warns @User`');
+            return true;
+        }
+        const target = mentions[0].id._serialized;
+        const count = await getWarningCount(groupId, target);
+        await msg.reply(
+            `⚠️ @${mentions[0].number} hat **${count}/${settings.maxWarnings}** Verwarnungen.`,
+            { mentions: [mentions[0]] }
+        );
+        return true;
+    }
+
+    if (command === '!resetwarns') {
+        const mentions = await msg.getMentions();
+        if (mentions.length === 0) {
+            await msg.reply('⚠️ Bitte einen Nutzer markieren: `!resetwarns @User`');
+            return true;
+        }
+        const target = mentions[0].id._serialized;
+        await resetWarnings(groupId, target);
+        await logAction(groupId, target, 'RESET_WARNS', 'Verwarnungen zurückgesetzt');
+        await msg.reply(
+            `✅ Verwarnungen von @${mentions[0].number} wurden zurückgesetzt.`,
+            { mentions: [mentions[0]] }
+        );
+        return true;
+    }
+
+    if (command === '!addword' && args[1]) {
+        const word = args.slice(1).join(' ').toLowerCase().trim();
+        if (word.length < 2) {
+            await msg.reply('⚠️ Wort zu kurz.');
+            return true;
+        }
+        try {
+            await dbPool.query('INSERT IGNORE INTO bad_words (word) VALUES (?)', [word]);
+            await reloadBadWordsCache();
+            await msg.reply(`✅ Schimpfwort **${word}** hinzugefügt.`);
+        } catch (e) {
+            await msg.reply(`❌ Fehler: ${e.message || e}`);
+        }
+        return true;
+    }
+
+    if (command === '!delword' && args[1]) {
+        const word = args.slice(1).join(' ').toLowerCase().trim();
+        try {
+            await dbPool.query('DELETE FROM bad_words WHERE word = ?', [word]);
+            await reloadBadWordsCache();
+            await msg.reply(`✅ Schimpfwort **${word}** entfernt.`);
+        } catch (e) {
+            await msg.reply(`❌ Fehler: ${e.message || e}`);
+        }
+        return true;
+    }
+
     if (command === '!help') {
         await msg.reply(
             `🛠 **Erweiterte Befehle:**\n\n` +
@@ -481,9 +717,7 @@ async function handleAdminCommands(msg, chat, settings) {
         );
         return true;
     }
-    
-    /* ... (Die restlichen Basis-Befehle wie !addword, !delword, !warns, !kick bleiben identisch wie in deiner Vorlage) ... */
-    
+
     return false;
 }
 

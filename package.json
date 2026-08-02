@@ -1,11 +1,12 @@
 {
   "name": "wa-bot",
-  "version": "2.0.0",
-  "description": "",
+  "version": "2.0.1",
+  "description": "WhatsApp Moderations-Bot mit MySQL",
   "license": "ISC",
   "type": "commonjs",
   "main": "app.js",
   "scripts": {
+    "start": "node app.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
