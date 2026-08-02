@@ -1,4 +1,8 @@
-require('dotenv').config();
+try {
+    require('dotenv').config();
+} catch (_) {
+    // dotenv optional – Panel setzt Env-Vars oft direkt
+}
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const mysql = require('mysql2/promise');
 const { execSync } = require('child_process');
@@ -557,7 +561,7 @@ async function handleAdminCommands(msg, chat, settings, groupId) {
             return true;
         }
         await dbPool.query('UPDATE group_settings SET max_warnings = ? WHERE group_id = ?', [n, groupId]);
-            await safeReply(msg, groupId, '✅ Max. Verwarnungen: **' + n + '**');
+        await safeReply(msg, groupId, '✅ Max. Verwarnungen: **' + n + '**');
         return true;
     }
     if (command === p + 'setwelcome') {
