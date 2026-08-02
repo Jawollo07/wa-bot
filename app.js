@@ -13,7 +13,6 @@ try {
 const CONFIG = {
     phoneNumber: process.env.PHONE_NUMBER,
 
-    // Zusätzliche Bot-Owner (Nummer ohne + und Leerzeichen), die immer als Admin gelten
     botOwners: (process.env.BOT_OWNERS || process.env.PHONE_NUMBER || '')
         .split(',')
         .map(s => s.trim().replace(/\D/g, ''))
@@ -74,9 +73,6 @@ function isBotOwner(senderId) {
     return CONFIG.botOwners.some(owner => num.includes(owner) || owner.includes(num));
 }
 
-/**
- * Chat robust laden – mehrere Strategien gegen den Puppeteer "r: r" Bug.
- */
 async function getChatSafe(msg, maxAttempts = 4) {
     const chatId = msg.from;
     let lastError;
@@ -87,7 +83,7 @@ async function getChatSafe(msg, maxAttempts = 4) {
                 await client.interface.openChatWindow(chatId);
                 await new Promise(r => setTimeout(r, 400));
             }
-        } catch (_) { /* ignore */ }
+        } catch (_) {}
 
         try {
             const chat = await msg.getChat();
@@ -502,7 +498,7 @@ client.on('message', async (msg) => {
             isAdmin = isAdmin || (participant ? (participant.isAdmin || participant.isSuperAdmin) : false);
         }
 
-        // Admins: Befehle immer verarbeiten (auch wenn Bot inaktiv)
+        // Admin-Befehle (!...) immer verarbeiten – auch wenn Bot inaktiv
         console.log('[4] Verarbeite mögliche Befehle...');
         if (isAdmin && text.startsWith('!')) {
             const handled = await handleAdminCommands(msg, chat, settings, groupId);
@@ -514,17 +510,13 @@ client.on('message', async (msg) => {
             return;
         }
 
-        // Admins: normale Nachrichten nie moderieren
-        if (isAdmin) {
-            console.log('👤 Admin-Nachricht – Moderation übersprungen.');
-            return;
-        }
-
-        // Bot aus: normale User-Nachrichten ignorieren
+        // Bot aus → keine Moderation
         if (!settings.isActive) {
             console.log('🔴 Bot ist inaktiv – Nachricht ignoriert.');
             return;
         }
+
+        // Ab hier: JEDER wird moderiert – auch Admins (keine Ausnahme mehr)
 
         console.log('[5] Prüfe auf Stummschaltung (Mute)...');
         if (await isMuted(groupId, senderId)) {
@@ -562,7 +554,7 @@ client.on('message', async (msg) => {
         }
 
         if (violationReason) {
-            console.log(`🚨 Regelverstoß erkannt: ${violationReason}`);
+            console.log(`🚨 Regelverstoß erkannt: ${violationReason}${isAdmin ? ' (Admin)' : ''}`);
             await handleViolation(msg, chat, groupId, senderId, violationReason, settings.maxWarnings);
         } else {
             console.log('✅ Nachricht ist sauber.');
@@ -626,8 +618,6 @@ async function safeReply(msg, groupId, text, options = {}) {
 async function handleAdminCommands(msg, chat, settings, groupId) {
     const args = msg.body.trim().split(/\s+/);
     const command = args[0].toLowerCase();
-
-    // Alle Admin-Befehle funktionieren IMMER – auch wenn der Bot inaktiv ist
 
     if (command === '!bot') {
         const action = args[1]?.toLowerCase();
