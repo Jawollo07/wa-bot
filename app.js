@@ -236,8 +236,8 @@ function containsBadWords(text) {
 // --- WHATSAPP CLIENT INITIALISIERUNG ---
 const client = new Client({
     authStrategy: new LocalAuth(),
+    // webVersionCache wurde hier bewusst entfernt!
     puppeteer: {
-        headless: true,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
