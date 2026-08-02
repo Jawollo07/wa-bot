@@ -61,8 +61,6 @@ const CONFIG = {
     wordUrls: [
         'https://raw.githubusercontent.com/AdvancedPlugins/Chat/main/swear%20words/en.json',
         'https://raw.githubusercontent.com/AdvancedPlugins/Chat/main/swear%20words/de.json',
-        'https://raw.githubusercontent.com/AdvancedPlugins/Chat/main/swear%20words/lt.json',
-        'https://raw.githubusercontent.com/AdvancedPlugins/Chat/main/swear%20words/es.json'
     ]
 };
 
