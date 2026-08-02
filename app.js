@@ -330,9 +330,23 @@ function formatUptime(ms) {
 }
 
 const client = new Client({
-    authStrategy: new LocalAuth(),
+    authStrategy: new LocalAuth({ dataPath: process.env.WWEBJS_AUTH_PATH || './.wwebjs_auth' }),
+    webVersionCache: {
+        type: 'remote',
+        remotePath: 'https://raw.githubusercontent.com/wwebjs/whatsapp-web.js/main/src/util/DefaultWebVersion.js'
+    },
     puppeteer: {
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote', '--disable-gpu']
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu',
+            '--disable-extensions'
+        ]
     }
 });
 
@@ -351,10 +365,31 @@ client.on('qr', async () => {
 client.on('authenticated', () => log('🔐 Authentifiziert'));
 client.on('auth_failure', (m) => console.error('❌ Auth fehlgeschlagen:', m));
 client.on('disconnected', (r) => log('🔌 Getrennt:', r));
-client.on('ready', () => {
+client.on('ready', async () => {
     botStartTime = Date.now();
-    log('🤖 Moderations-Bot v2.1.0 ist einsatzbereit!');
+    log('🤖 Moderations-Bot v2.1.1 ist einsatzbereit!');
+    try {
+        const chats = await client.getChats();
+        const groups = chats.filter(c => c.isGroup);
+        log('📋 Chats: ' + chats.length + ' (davon ' + groups.length + ' Gruppen)');
+    } catch (e) {
+        log('⚠️ getChats fehlgeschlagen: ' + (e.message || e));
+    }
 });
+
+// Roh-Debug: zeigt, ob wwebjs überhaupt Events liefert
+client.on('message', (msg) => {
+    try {
+        log('🔎 [message] from=' + (msg && msg.from) + ' body=' + String((msg && msg.body) || '').slice(0, 40));
+    } catch (_) {}
+});
+client.on('message_create', (msg) => {
+    try {
+        log('🔎 [message_create] fromMe=' + (msg && msg.fromMe) + ' from=' + (msg && msg.from) + ' body=' + String((msg && msg.body) || '').slice(0, 40));
+    } catch (_) {}
+});
+client.on('change_state', (state) => log('📡 State: ' + state));
+client.on('loading_screen', (percent, message) => log('⏳ Loading: ' + percent + '% ' + (message || '')));
 
 client.on('group_join', async (notification) => {
     try {
@@ -543,7 +578,7 @@ async function handleAdminCommands(msg, chat, settings, groupId) {
         return true;
     }
     if (command === p + 'info') {
-        await safeReply(msg, groupId, '🤖 **wa-bot v2.1.0**\n• Uptime: ' + formatUptime(Date.now() - botStartTime) + '\n• Nachrichten: ' + stats.messages + '\n• Verstöße: ' + stats.violations + '\n• Befehle: ' + stats.commands + '\n• Schimpfwörter: ' + loadedBadWords.length + '\n• Gruppe: ' + (settings.isActive ? '🟢 aktiv' : '🔴 inaktiv'));
+        await safeReply(msg, groupId, '🤖 **wa-bot v2.1.1**\n• Uptime: ' + formatUptime(Date.now() - botStartTime) + '\n• Nachrichten: ' + stats.messages + '\n• Verstöße: ' + stats.violations + '\n• Befehle: ' + stats.commands + '\n• Schimpfwörter: ' + loadedBadWords.length + '\n• Gruppe: ' + (settings.isActive ? '🟢 aktiv' : '🔴 inaktiv'));
         return true;
     }
     if (command === p + 'stats') {
