@@ -5,6 +5,7 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const mysql = require('mysql2/promise');
 const { execSync } = require('child_process');
 const profanity = require('./profanity');
+const safeDeleteMessageImpl = require('./safe_delete');
 
 try {
     console.log('🔄 Prüfe Chrome-Installation für Puppeteer...');
@@ -385,22 +386,46 @@ client.on('group_leave', async (notification) => {
     }
 });
 
-client.on('message', async (msg) => {
-    if (!msg.from.endsWith('@g.us')) return;
-    if (msg.fromMe) return;
-    stats.messages++;
-    log('📩 "' + (msg.body || ('[' + msg.type + ']')) + '"');
+const _seenMsgIds = new Set();
+
+async function onIncomingMessage(msg) {
     try {
+        if (!msg || !msg.from) return;
+        if (!String(msg.from).endsWith('@g.us')) return;
+        if (msg.fromMe) return;
+
+        const mid = msg.id && (msg.id._serialized || msg.id.id);
+        if (mid) {
+            if (_seenMsgIds.has(mid)) return;
+            _seenMsgIds.add(mid);
+            if (_seenMsgIds.size > 500) {
+                const first = _seenMsgIds.values().next().value;
+                _seenMsgIds.delete(first);
+            }
+            setTimeout(() => _seenMsgIds.delete(mid), 60000);
+        }
+
+        stats.messages++;
+        const bodyPreview = msg.body || ('[' + (msg.type || 'unknown') + ']');
+        log('📩 "' + bodyPreview + '" from=' + (msg.author || msg.from));
+
         const groupId = msg.from;
         const senderId = msg.author || msg.from;
         const text = msg.body || '';
         const settings = await getGroupSettings(groupId);
+
         let chat = null;
-        try { chat = await getChatSafe(msg); } catch (_) { log('⚠️ Chat-Fallback aktiv'); }
+        try {
+            chat = await getChatSafe(msg);
+        } catch (_) {
+            log('⚠️ Chat-Fallback aktiv');
+        }
+
         const ownerHit = isBotOwner(senderId);
         const adminHit = isParticipantAdmin(chat, senderId);
-        let isAdmin = ownerHit || adminHit;
+        const isAdmin = ownerHit || adminHit;
         if (isAdmin) log('👤 Rechte: owner=' + ownerHit + ' groupAdmin=' + adminHit + ' sender=' + senderId);
+
         if (isAdmin && text.startsWith(PREFIX)) {
             const handled = await handleAdminCommands(msg, chat, settings, groupId);
             if (handled) {
@@ -409,16 +434,21 @@ client.on('message', async (msg) => {
                 return;
             }
         }
+
         if (!settings.isActive) {
             log('🔴 Bot inaktiv');
             return;
         }
+
         if (await isMuted(groupId, senderId)) {
             await safeDeleteMessage(msg, groupId);
             return;
         }
+
         let violationReason = null;
-        if (settings.antiSpam && isSpamming(groupId, senderId)) violationReason = 'Spam-Schutz: Zu viele Nachrichten.';
+        if (settings.antiSpam && isSpamming(groupId, senderId)) {
+            violationReason = 'Spam-Schutz: Zu viele Nachrichten.';
+        }
         if (!violationReason) {
             if (!settings.allowStickers && msg.type === 'sticker') violationReason = 'Sticker deaktiviert.';
             else if (!settings.allowImages && msg.type === 'image') violationReason = 'Bilder deaktiviert.';
@@ -435,17 +465,23 @@ client.on('message', async (msg) => {
                 violationReason = 'Schimpfwort erkannt.';
             }
         }
+
         if (violationReason) {
             stats.violations++;
             log('🚨 ' + violationReason + (isAdmin ? ' (Admin)' : ''));
             await handleViolation(msg, chat, groupId, senderId, violationReason, settings.maxWarnings, isAdmin);
         }
     } catch (error) {
-        console.error('⚠️ Handler-Fehler:', error.stack || error);
+        console.error('⚠️ Handler-Fehler:', error && (error.stack || error));
     }
+}
+
+client.on('message', onIncomingMessage);
+client.on('message_create', async (msg) => {
+    if (msg.fromMe) return;
+    await onIncomingMessage(msg);
 });
 
-const safeDeleteMessageImpl = require('./safe_delete');
 async function safeDeleteMessage(msg, groupId) {
     return safeDeleteMessageImpl(client, msg, groupId, log);
 }
