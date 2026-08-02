@@ -21,23 +21,6 @@ function mapLeetChar(ch) {
     return LEET_MAP[ch] !== undefined ? LEET_MAP[ch] : ch;
 }
 
-function normalizeForProfanity(text) {
-    if (!text) return '';
-    let s = String(text).toLowerCase();
-    try {
-        s = s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
-    } catch (_) {}
-    s = s.replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF\u00AD]/g, '');
-    let out = '';
-    for (let i = 0; i < s.length; i++) {
-        out += mapLeetChar(s[i]);
-    }
-    s = out;
-    s = s.replace(/([a-z])[^a-z]+(?=[a-z])/g, '$1');
-    s = s.replace(/(.)\1{2,}/g, '$1$1');
-    return s;
-}
-
 function lettersOnly(text) {
     return String(text).replace(/[^a-z]/g, '');
 }
@@ -67,9 +50,34 @@ function rebuildBadWordIndexes() {
     longBadWords = [...new Set(longBadWords)];
 }
 
+function normalizeForProfanity(text) {
+    if (!text) return '';
+    let s = String(text).toLowerCase();
+    
+    try {
+        s = s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
+    } catch (_) {}
+    
+    s = s.replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF\u00AD]/g, '');
+    
+    let out = '';
+    for (let i = 0; i < s.length; i++) {
+        out += mapLeetChar(s[i]);
+    }
+    s = out;
+    
+    // ÄNDERUNG: Wir entfernen Satzzeichen zwischen Buchstaben (z.B. a.b -> ab), 
+    // aber Leerzeichen (\s) bleiben intakt!
+    s = s.replace(/([a-z])[^a-z\s]+(?=[a-z])/g, '$1');
+    s = s.replace(/(.)\1{2,}/g, '$1$1');
+    return s;
+}
+
 function findBadWord(text) {
     if (!text || badWordsOriginal.length === 0) return null;
     const lower = text.toLowerCase();
+    
+    // 1. Originale, sichere Prüfung auf exakte Wortgrenzen
     for (const word of badWordsOriginal) {
         if (word.length < 2) continue;
         const esc = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -81,12 +89,15 @@ function findBadWord(text) {
             if (re2.test(lower)) return word;
         }
     }
+    
     const norm = normalizeForProfanity(text);
+    
+    // Wir splitten den Text sauber nach Leerzeichen und Satzzeichen in echte Wörter
     const tokens = norm.split(/[^a-z0-9]+/).filter(t => t.length >= 2);
     const collapsedTokens = tokens.map(t => collapseRepeats(lettersOnly(t)));
     const letterTokens = tokens.map(t => lettersOnly(t));
-    const fullLetters = lettersOnly(norm);
-    const fullCollapsed = collapseRepeats(fullLetters);
+    
+    // 2. Prüfen der einzelnen Tokens (Wörter)
     for (const t of letterTokens) {
         if (shortBadWords.has(t) || shortBadWords.has(collapseRepeats(t))) return t;
     }
@@ -95,8 +106,17 @@ function findBadWord(text) {
     }
     for (const word of longBadWords) {
         if (letterTokens.includes(word) || collapsedTokens.includes(word)) return word;
-        if (word.length >= 5 && (fullLetters.includes(word) || fullCollapsed.includes(word))) return word;
     }
+    
+    // 3. NEU: Schutz gegen absichtlich mit Leerzeichen gestreckte Wörter (z.B. "i d i o t")
+    // Wir filtern alle isolierten Einzelbuchstaben heraus und setzen sie zusammen.
+    const singleLetters = norm.split(/\s+/).filter(t => t.length === 1).join('');
+    if (singleLetters.length >= 3) {
+        for (const word of longBadWords) {
+            if (word.length >= 3 && singleLetters.includes(word)) return word;
+        }
+    }
+    
     return null;
 }
 
