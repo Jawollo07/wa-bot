@@ -13,6 +13,12 @@ try {
 const CONFIG = {
     phoneNumber: process.env.PHONE_NUMBER,
 
+    // Zusätzliche Bot-Owner (Nummer ohne + und Leerzeichen), die immer als Admin gelten
+    botOwners: (process.env.BOT_OWNERS || process.env.PHONE_NUMBER || '')
+        .split(',')
+        .map(s => s.trim().replace(/\D/g, ''))
+        .filter(Boolean),
+
     allowedGroups: [
     ],
 
@@ -55,7 +61,6 @@ let loadedBadWords = [];
 const messageTimestamps = new Map();
 let pairingCodeRequested = false;
 
-// --- ANTI-CRASH SYSTEM ---
 process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection bei:', promise, 'Grund:', reason);
 });
@@ -63,38 +68,101 @@ process.on('uncaughtException', (err) => {
     console.error('Uncaught Exception:', err);
 });
 
+function isBotOwner(senderId) {
+    if (!senderId) return false;
+    const num = String(senderId).replace(/\D/g, '');
+    return CONFIG.botOwners.some(owner => num.includes(owner) || owner.includes(num));
+}
+
 /**
- * Chat mit Retry holen – Workaround für den bekannten Puppeteer "r: r" Fehler
- * bei getChatById nach WhatsApp-Web-Updates (seit Juli 2026).
+ * Chat robust laden – mehrere Strategien gegen den Puppeteer "r: r" Bug.
  */
-async function getChatSafe(msg, maxAttempts = 3) {
+async function getChatSafe(msg, maxAttempts = 4) {
+    const chatId = msg.from;
     let lastError;
+
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        // Strategie A: Chat-Fenster öffnen (lädt das Chat-Model in den Store)
+        try {
+            if (client.interface?.openChatWindow) {
+                await client.interface.openChatWindow(chatId);
+                await new Promise(r => setTimeout(r, 400));
+            }
+        } catch (_) { /* ignore */ }
+
+        // Strategie B: msg.getChat()
         try {
             const chat = await msg.getChat();
             if (chat) return chat;
         } catch (err) {
             lastError = err;
-            const msgText = err?.message || String(err);
-            console.log(`⚠️ getChat Versuch ${attempt}/${maxAttempts} fehlgeschlagen: ${msgText}`);
-            if (attempt < maxAttempts) {
-                await new Promise(r => setTimeout(r, 600 * attempt));
+        }
+
+        // Strategie C: client.getChatById
+        try {
+            const chat = await client.getChatById(chatId);
+            if (chat) return chat;
+        } catch (err) {
+            lastError = err;
+        }
+
+        // Strategie D: direkt über Puppeteer Store
+        try {
+            const chatData = await client.pupPage.evaluate(async (id) => {
+                const chat = window.Store?.Chat?.get(id)
+                    || window.Store?.Chat?.find?.(id)
+                    || (await window.WWebJS?.getChat?.(id, { getAsModel: false }));
+                if (!chat) return null;
+                return {
+                    id: chat.id,
+                    name: chat.formattedTitle || chat.name || id,
+                    isGroup: true,
+                    participants: (chat.groupMetadata?.participants?.getModelsArray?.()
+                        || chat.groupMetadata?.participants
+                        || []).map(p => ({
+                            id: p.id,
+                            isAdmin: !!(p.isAdmin || p.isSuperAdmin),
+                            isSuperAdmin: !!p.isSuperAdmin
+                        }))
+                };
+            }, chatId);
+
+            if (chatData) {
+                // Minimales Chat-ähnliches Objekt bauen
+                return {
+                    id: { _serialized: chatId },
+                    name: chatData.name,
+                    isGroup: true,
+                    participants: (chatData.participants || []).map(p => ({
+                        id: { _serialized: p.id?._serialized || p.id },
+                        isAdmin: p.isAdmin,
+                        isSuperAdmin: p.isSuperAdmin
+                    })),
+                    sendMessage: (content, options) => client.sendMessage(chatId, content, options),
+                    removeParticipants: async (ids) => {
+                        const chat = await client.getChatById(chatId);
+                        return chat.removeParticipants(ids);
+                    },
+                    setMessagesAdminsOnly: async (flag) => {
+                        const chat = await client.getChatById(chatId);
+                        return chat.setMessagesAdminsOnly(flag);
+                    }
+                };
             }
+        } catch (err) {
+            lastError = err;
+        }
+
+        const msgText = lastError?.message || String(lastError || 'unknown');
+        console.log(`⚠️ getChat Versuch ${attempt}/${maxAttempts} fehlgeschlagen: ${msgText}`);
+        if (attempt < maxAttempts) {
+            await new Promise(r => setTimeout(r, 800 * attempt));
         }
     }
-    // Fallback: direkt über Client (manchmal stabiler)
-    try {
-        const chat = await client.getChatById(msg.from);
-        if (chat) return chat;
-    } catch (err) {
-        lastError = err;
-    }
+
     throw lastError || new Error('Chat konnte nicht geladen werden');
 }
 
-/**
- * Fügt fehlende Spalten zu einer bestehenden Tabelle hinzu (Migration).
- */
 async function ensureColumn(table, column, definition) {
     try {
         const [rows] = await dbPool.query(
@@ -109,7 +177,6 @@ async function ensureColumn(table, column, definition) {
             console.log(`  ➕ Spalte ${table}.${column} hinzugefügt`);
         }
     } catch (err) {
-        // Fallback: ALTER versuchen und „Duplicate column“ ignorieren
         try {
             await dbPool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
             console.log(`  ➕ Spalte ${table}.${column} hinzugefügt`);
@@ -121,9 +188,6 @@ async function ensureColumn(table, column, definition) {
     }
 }
 
-/**
- * Initialisiert die erweiterte Datenbank + Migration bestehender Tabellen
- */
 async function initDatabase() {
     try {
         dbPool = mysql.createPool({
@@ -168,7 +232,6 @@ async function initDatabase() {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         `);
 
-        // Migration: fehlende Spalten bei bestehender group_settings-Tabelle nachziehen
         console.log('🔄 Prüfe group_settings-Schema...');
         await ensureColumn('group_settings', 'is_active', 'TINYINT(1) DEFAULT 0');
         await ensureColumn('group_settings', 'allow_links', 'TINYINT(1) DEFAULT 0');
@@ -208,7 +271,6 @@ async function initDatabase() {
     }
 }
 
-// --- DATENBANK HILFSFUNKTIONEN ---
 async function syncAndLoadBadWords() {
     console.log('🔄 Synchronisiere Schimpfwörter...');
     const wordsSet = new Set();
@@ -225,9 +287,7 @@ async function syncAndLoadBadWords() {
                     wordsSet.add(word.trim().toLowerCase());
                 }
             }
-        } catch (error) {
-            // einzelne Listen-Fehler ignorieren
-        }
+        } catch (_) {}
     }
     if (wordsSet.size > 0) {
         const connection = await dbPool.getConnection();
@@ -354,7 +414,6 @@ function containsBadWords(text) {
     });
 }
 
-// --- WHATSAPP CLIENT INITIALISIERUNG ---
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
@@ -386,18 +445,20 @@ client.on('ready', () => {
     console.log('🤖 Vollausgestatteter Moderations-Bot ist einsatzbereit!');
 });
 
-// --- WELCOME / LEAVE EVENTS ---
 client.on('group_join', async (notification) => {
     try {
         const groupId = notification.chatId;
         const settings = await getGroupSettings(groupId);
         if (!settings.isActive || !settings.welcomeActive) return;
 
-        const chat = await client.getChatById(groupId);
         for (const userId of notification.recipientIds) {
-            const contact = await client.getContactById(userId);
-            const msgText = settings.welcomeMsg.replace('@user', `@${contact.number}`);
-            await chat.sendMessage(msgText, { mentions: [contact] });
+            try {
+                const contact = await client.getContactById(userId);
+                const text = settings.welcomeMsg.replace('@user', `@${contact.number}`);
+                await client.sendMessage(groupId, text, { mentions: [contact] });
+            } catch (e) {
+                console.error('Welcome-Nachricht fehlgeschlagen:', e.message || e);
+            }
         }
     } catch (err) {
         console.error('Fehler bei group_join:', err.message || err);
@@ -409,15 +470,12 @@ client.on('group_leave', async (notification) => {
         const groupId = notification.chatId;
         const settings = await getGroupSettings(groupId);
         if (!settings.isActive || !settings.welcomeActive) return;
-
-        const chat = await client.getChatById(groupId);
-        await chat.sendMessage(settings.leaveMsg);
+        await client.sendMessage(groupId, settings.leaveMsg);
     } catch (err) {
         console.error('Fehler bei group_leave:', err.message || err);
     }
 });
 
-// --- HAUPT LOGIK FÜR NACHRICHTEN ---
 client.on('message', async (msg) => {
     if (!msg.from.endsWith('@g.us')) return;
 
@@ -433,30 +491,36 @@ client.on('message', async (msg) => {
         const settings = await getGroupSettings(groupId);
 
         console.log('[2] Lade Chat (mit Retry)...');
-        let chat;
+        let chat = null;
         try {
             chat = await getChatSafe(msg);
         } catch (err) {
-            console.error('❌ Chat konnte nach mehreren Versuchen nicht geladen werden:', err.message || err);
-            return;
+            console.log('⚠️ Chat nicht ladbar – Fallback-Modus (ohne Participants).');
         }
 
         console.log('[3] Prüfe Admin-Status...');
-        const participants = chat.participants || [];
-        const participant = participants.find(p => p.id._serialized === senderId);
-        const isAdmin = participant ? (participant.isAdmin || participant.isSuperAdmin) : false;
+        let isAdmin = isBotOwner(senderId);
+        let isBotAdmin = false;
 
-        const botId = client.info?.wid?._serialized;
-        const botParticipant = botId
-            ? participants.find(p => p.id._serialized === botId)
-            : null;
-        const isBotAdmin = botParticipant
-            ? (botParticipant.isAdmin || botParticipant.isSuperAdmin)
-            : false;
+        if (chat && chat.participants) {
+            const participants = chat.participants || [];
+            const participant = participants.find(p => p.id._serialized === senderId);
+            isAdmin = isAdmin || (participant ? (participant.isAdmin || participant.isSuperAdmin) : false);
+
+            const botId = client.info?.wid?._serialized;
+            const botParticipant = botId
+                ? participants.find(p => p.id._serialized === botId)
+                : null;
+            isBotAdmin = botParticipant
+                ? (botParticipant.isAdmin || botParticipant.isSuperAdmin)
+                : false;
+        } else if (isBotOwner(senderId)) {
+            isAdmin = true;
+        }
 
         console.log('[4] Verarbeite mögliche Befehle...');
         if (isAdmin && text.startsWith('!')) {
-            const handled = await handleAdminCommands(msg, chat, settings);
+            const handled = await handleAdminCommands(msg, chat, settings, groupId);
             if (handled) return;
         }
 
@@ -467,10 +531,6 @@ client.on('message', async (msg) => {
 
         console.log('[5] Prüfe auf Stummschaltung (Mute)...');
         if (await isMuted(groupId, senderId)) {
-            if (!isBotAdmin) {
-                console.log('⚠️ Kann stummgeschalteten User nicht blockieren: Bot ist kein Admin!');
-                return;
-            }
             try {
                 await msg.delete(true);
             } catch (e) {
@@ -479,7 +539,7 @@ client.on('message', async (msg) => {
             return;
         }
 
-        console.log('[6] Prüfe auf Regelverstöße (Spam, Filter, etc.)...');
+        console.log('[6] Prüfe auf Regelverstöße...');
         let violationReason = null;
 
         if (settings.antiSpam && isSpamming(groupId, senderId)) {
@@ -506,11 +566,7 @@ client.on('message', async (msg) => {
 
         if (violationReason) {
             console.log(`🚨 Regelverstoß erkannt: ${violationReason}`);
-            if (!isBotAdmin) {
-                console.log('⚠️ Moderation abgebrochen: Bot hat keine Admin-Rechte!');
-                return;
-            }
-            await handleViolation(msg, chat, senderId, violationReason, settings.maxWarnings);
+            await handleViolation(msg, chat, groupId, senderId, violationReason, settings.maxWarnings);
         } else {
             console.log('✅ Nachricht ist sauber.');
         }
@@ -520,9 +576,8 @@ client.on('message', async (msg) => {
     }
 });
 
-async function handleViolation(msg, chat, senderId, reason, maxWarnings) {
+async function handleViolation(msg, chat, groupId, senderId, reason, maxWarnings) {
     try {
-        const groupId = chat.id._serialized;
         try {
             await msg.delete(true);
         } catch (e) {
@@ -532,31 +587,28 @@ async function handleViolation(msg, chat, senderId, reason, maxWarnings) {
         const currentWarns = await addWarning(groupId, senderId);
         await logAction(groupId, senderId, 'WARN', reason);
 
-        let contact;
-        try {
-            contact = await msg.getContact();
-        } catch (e) {
-            contact = { number: senderId.split('@')[0] };
-        }
-
-        const mentionId = contact.id || { _serialized: senderId };
+        const number = senderId.split('@')[0].replace(/\D/g, '');
 
         if (currentWarns >= maxWarnings) {
-            await chat.sendMessage(
-                `⛔ @${contact.number} wurde automatisch gekickt.\n**Grund:** Maximale Verwarnungen erreicht.`,
-                { mentions: [mentionId] }
+            await client.sendMessage(
+                groupId,
+                `⛔ @${number} wurde automatisch gekickt.\n**Grund:** Maximale Verwarnungen erreicht.`,
+                { mentions: [senderId] }
             );
-            try {
-                await chat.removeParticipants([senderId]);
-            } catch (e) {
-                console.error('Kick fehlgeschlagen:', e.message || e);
+            if (chat?.removeParticipants) {
+                try {
+                    await chat.removeParticipants([senderId]);
+                } catch (e) {
+                    console.error('Kick fehlgeschlagen:', e.message || e);
+                }
             }
             await resetWarnings(groupId, senderId);
             await logAction(groupId, senderId, 'KICK', 'Maximale Verwarnungen erreicht');
         } else {
-            await chat.sendMessage(
-                `⚠️ @${contact.number}, deine Nachricht wurde entfernt.\n**Grund:** ${reason}\n**Verwarnung:** ${currentWarns}/${maxWarnings}`,
-                { mentions: [mentionId] }
+            await client.sendMessage(
+                groupId,
+                `⚠️ @${number}, deine Nachricht wurde entfernt.\n**Grund:** ${reason}\n**Verwarnung:** ${currentWarns}/${maxWarnings}`,
+                { mentions: [senderId] }
             );
         }
     } catch (err) {
@@ -564,11 +616,19 @@ async function handleViolation(msg, chat, senderId, reason, maxWarnings) {
     }
 }
 
-// --- ERWEITERTE ADMIN BEFEHLE ---
-async function handleAdminCommands(msg, chat, settings) {
+async function safeReply(msg, groupId, text, options = {}) {
+    try {
+        if (msg.reply) {
+            await msg.reply(text, undefined, options);
+            return;
+        }
+    } catch (_) {}
+    await client.sendMessage(groupId, text, options);
+}
+
+async function handleAdminCommands(msg, chat, settings, groupId) {
     const args = msg.body.trim().split(/\s+/);
     const command = args[0].toLowerCase();
-    const groupId = chat.id._serialized;
 
     if (command === '!bot') {
         const action = args[1]?.toLowerCase();
@@ -578,29 +638,37 @@ async function handleAdminCommands(msg, chat, settings) {
                 'UPDATE group_settings SET is_active = ? WHERE group_id = ?',
                 [state, groupId]
             );
-            await msg.reply(state ? '🟢 **Bot aktiviert!**' : '🔴 **Bot deaktiviert!**');
+            await safeReply(msg, groupId, state ? '🟢 **Bot aktiviert!**' : '🔴 **Bot deaktiviert!**');
             return true;
         }
-        await msg.reply(`ℹ️ Status: **${settings.isActive ? '🟢 AKTIV' : '🔴 INAKTIV'}**`);
+        await safeReply(msg, groupId, `ℹ️ Status: **${settings.isActive ? '🟢 AKTIV' : '🔴 INAKTIV'}**`);
         return true;
     }
 
     if (!settings.isActive && command !== '!bot') return false;
 
     if (command === '!lock') {
-        await chat.setMessagesAdminsOnly(true);
-        await msg.reply('🔒 **Gruppe gesperrt.** Nur noch Admins können schreiben.');
+        if (chat?.setMessagesAdminsOnly) {
+            await chat.setMessagesAdminsOnly(true);
+            await safeReply(msg, groupId, '🔒 **Gruppe gesperrt.** Nur noch Admins können schreiben.');
+        } else {
+            await safeReply(msg, groupId, '⚠️ Chat-Objekt nicht verfügbar – !lock nicht möglich.');
+        }
         return true;
     }
 
     if (command === '!unlock') {
-        await chat.setMessagesAdminsOnly(false);
-        await msg.reply('🔓 **Gruppe entsperrt.** Alle können wieder schreiben.');
+        if (chat?.setMessagesAdminsOnly) {
+            await chat.setMessagesAdminsOnly(false);
+            await safeReply(msg, groupId, '🔓 **Gruppe entsperrt.** Alle können wieder schreiben.');
+        } else {
+            await safeReply(msg, groupId, '⚠️ Chat-Objekt nicht verfügbar – !unlock nicht möglich.');
+        }
         return true;
     }
 
     if (command === '!mute' || command === '!unmute') {
-        const mentions = await msg.getMentions();
+        const mentions = await msg.getMentions().catch(() => []);
         if (mentions.length > 0) {
             const target = mentions[0].id._serialized;
             if (command === '!mute') {
@@ -608,8 +676,8 @@ async function handleAdminCommands(msg, chat, settings) {
                     'INSERT IGNORE INTO muted_users (group_id, user_id) VALUES (?, ?)',
                     [groupId, target]
                 );
-                await msg.reply(
-                    `🤫 @${mentions[0].number} wurde stummgeschaltet. Alle Nachrichten werden gelöscht.`,
+                await safeReply(msg, groupId,
+                    `🤫 @${mentions[0].number} wurde stummgeschaltet.`,
                     { mentions: [mentions[0]] }
                 );
             } else {
@@ -617,13 +685,13 @@ async function handleAdminCommands(msg, chat, settings) {
                     'DELETE FROM muted_users WHERE group_id = ? AND user_id = ?',
                     [groupId, target]
                 );
-                await msg.reply(
+                await safeReply(msg, groupId,
                     `🔊 @${mentions[0].number} darf wieder schreiben.`,
                     { mentions: [mentions[0]] }
                 );
             }
         } else {
-            await msg.reply('⚠️ Bitte einen Nutzer markieren: `!mute @User`');
+            await safeReply(msg, groupId, '⚠️ Bitte einen Nutzer markieren: `!mute @User`');
         }
         return true;
     }
@@ -643,21 +711,20 @@ async function handleAdminCommands(msg, chat, settings) {
         if (validOptions[option]) {
             const field = validOptions[option];
             const camelKey = field.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
-            const currentVal = settings[camelKey];
-            const newVal = !currentVal;
+            const newVal = !settings[camelKey];
             await dbPool.query(
                 `UPDATE group_settings SET ${field} = ? WHERE group_id = ?`,
                 [newVal ? 1 : 0, groupId]
             );
-            await msg.reply(`✅ Einstellung für **${option}** ist jetzt: ${newVal ? 'AN' : 'AUS'}`);
+            await safeReply(msg, groupId, `✅ Einstellung für **${option}** ist jetzt: ${newVal ? 'AN' : 'AUS'}`);
         } else {
-            await msg.reply('⚠️ Ungültige Option. Verfügbar: links, stickers, images, videos, audios, antispam, welcome');
+            await safeReply(msg, groupId, '⚠️ Ungültige Option. Verfügbar: links, stickers, images, videos, audios, antispam, welcome');
         }
         return true;
     }
 
     if (command === '!settings') {
-        await msg.reply(
+        await safeReply(msg, groupId,
             `⚙️ **Gruppen-Einstellungen:**\n\n` +
             `• Status: ${settings.isActive ? '🟢' : '🔴'}\n` +
             `• Willkommensnachrichten: ${settings.welcomeActive ? '✅' : '❌'}\n` +
@@ -670,31 +737,35 @@ async function handleAdminCommands(msg, chat, settings) {
     }
 
     if (command === '!kick') {
-        const mentions = await msg.getMentions();
+        const mentions = await msg.getMentions().catch(() => []);
         if (mentions.length === 0) {
-            await msg.reply('⚠️ Bitte einen Nutzer markieren: `!kick @User`');
+            await safeReply(msg, groupId, '⚠️ Bitte einen Nutzer markieren: `!kick @User`');
             return true;
         }
         const target = mentions[0].id._serialized;
         try {
-            await chat.removeParticipants([target]);
+            if (chat?.removeParticipants) {
+                await chat.removeParticipants([target]);
+            } else {
+                throw new Error('Chat-Objekt nicht verfügbar');
+            }
             await logAction(groupId, target, 'KICK', 'Manueller Kick durch Admin');
-            await msg.reply(`👢 @${mentions[0].number} wurde entfernt.`, { mentions: [mentions[0]] });
+            await safeReply(msg, groupId, `👢 @${mentions[0].number} wurde entfernt.`, { mentions: [mentions[0]] });
         } catch (e) {
-            await msg.reply(`❌ Kick fehlgeschlagen: ${e.message || e}`);
+            await safeReply(msg, groupId, `❌ Kick fehlgeschlagen: ${e.message || e}`);
         }
         return true;
     }
 
     if (command === '!warns') {
-        const mentions = await msg.getMentions();
+        const mentions = await msg.getMentions().catch(() => []);
         if (mentions.length === 0) {
-            await msg.reply('⚠️ Bitte einen Nutzer markieren: `!warns @User`');
+            await safeReply(msg, groupId, '⚠️ Bitte einen Nutzer markieren: `!warns @User`');
             return true;
         }
         const target = mentions[0].id._serialized;
         const count = await getWarningCount(groupId, target);
-        await msg.reply(
+        await safeReply(msg, groupId,
             `⚠️ @${mentions[0].number} hat **${count}/${settings.maxWarnings}** Verwarnungen.`,
             { mentions: [mentions[0]] }
         );
@@ -702,15 +773,15 @@ async function handleAdminCommands(msg, chat, settings) {
     }
 
     if (command === '!resetwarns') {
-        const mentions = await msg.getMentions();
+        const mentions = await msg.getMentions().catch(() => []);
         if (mentions.length === 0) {
-            await msg.reply('⚠️ Bitte einen Nutzer markieren: `!resetwarns @User`');
+            await safeReply(msg, groupId, '⚠️ Bitte einen Nutzer markieren: `!resetwarns @User`');
             return true;
         }
         const target = mentions[0].id._serialized;
         await resetWarnings(groupId, target);
         await logAction(groupId, target, 'RESET_WARNS', 'Verwarnungen zurückgesetzt');
-        await msg.reply(
+        await safeReply(msg, groupId,
             `✅ Verwarnungen von @${mentions[0].number} wurden zurückgesetzt.`,
             { mentions: [mentions[0]] }
         );
@@ -720,15 +791,15 @@ async function handleAdminCommands(msg, chat, settings) {
     if (command === '!addword' && args[1]) {
         const word = args.slice(1).join(' ').toLowerCase().trim();
         if (word.length < 2) {
-            await msg.reply('⚠️ Wort zu kurz.');
+            await safeReply(msg, groupId, '⚠️ Wort zu kurz.');
             return true;
         }
         try {
             await dbPool.query('INSERT IGNORE INTO bad_words (word) VALUES (?)', [word]);
             await reloadBadWordsCache();
-            await msg.reply(`✅ Schimpfwort **${word}** hinzugefügt.`);
+            await safeReply(msg, groupId, `✅ Schimpfwort **${word}** hinzugefügt.`);
         } catch (e) {
-            await msg.reply(`❌ Fehler: ${e.message || e}`);
+            await safeReply(msg, groupId, `❌ Fehler: ${e.message || e}`);
         }
         return true;
     }
@@ -738,22 +809,22 @@ async function handleAdminCommands(msg, chat, settings) {
         try {
             await dbPool.query('DELETE FROM bad_words WHERE word = ?', [word]);
             await reloadBadWordsCache();
-            await msg.reply(`✅ Schimpfwort **${word}** entfernt.`);
+            await safeReply(msg, groupId, `✅ Schimpfwort **${word}** entfernt.`);
         } catch (e) {
-            await msg.reply(`❌ Fehler: ${e.message || e}`);
+            await safeReply(msg, groupId, `❌ Fehler: ${e.message || e}`);
         }
         return true;
     }
 
     if (command === '!help') {
-        await msg.reply(
+        await safeReply(msg, groupId,
             `🛠 **Erweiterte Befehle:**\n\n` +
             `• \`!bot on/off\` - Bot umschalten\n` +
             `• \`!settings\` - Übersicht anzeigen\n` +
             `• \`!toggle <links|stickers|images|videos|audios|antispam|welcome>\`\n` +
-            `• \`!lock / !unlock\` - Chat für Mitglieder sperren/öffnen\n` +
-            `• \`!mute @User\` / \`!unmute @User\` - User stummschalten\n` +
-            `• \`!kick @User\` - Nutzer entfernen\n` +
+            `• \`!lock / !unlock\` - Chat sperren/öffnen\n` +
+            `• \`!mute @User\` / \`!unmute @User\`\n` +
+            `• \`!kick @User\`\n` +
             `• \`!warns @User\` / \`!resetwarns @User\`\n` +
             `• \`!addword <Wort>\` / \`!delword <Wort>\``
         );
