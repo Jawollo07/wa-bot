@@ -9,7 +9,6 @@ const LEET_MAP = {
     'ó': 'o', 'ò': 'o', 'ô': 'o', 'ö': 'o', 'õ': 'o',
     'ú': 'u', 'ù': 'u', 'û': 'u', 'ü': 'u',
     'ý': 'y', 'ÿ': 'y', 'ñ': 'n', 'ç': 'c',
-    // häufige kyrillische Lookalikes
     'а': 'a', 'е': 'e', 'о': 'o', 'р': 'p', 'с': 'c', 'у': 'y', 'х': 'x', 'і': 'i', 'ј': 'j'
 };
 
@@ -22,7 +21,6 @@ function mapLeetChar(ch) {
     return LEET_MAP[ch] !== undefined ? LEET_MAP[ch] : ch;
 }
 
-/** Text aggressiv normalisieren: Unicode, Leetspeak, Trennzeichen, Wiederholungen */
 function normalizeForProfanity(text) {
     if (!text) return '';
     let s = String(text).toLowerCase();
@@ -35,9 +33,7 @@ function normalizeForProfanity(text) {
         out += mapLeetChar(s[i]);
     }
     s = out;
-    // Trennzeichen zwischen Buchstaben: f.u.c.k, f-u-c-k, f u c k
     s = s.replace(/([a-z])[^a-z]+(?=[a-z])/g, '$1');
-    // Wiederholungen max. 2: fuuuuck -> fuuck
     s = s.replace(/(.)\1{2,}/g, '$1$1');
     return s;
 }
@@ -71,16 +67,9 @@ function rebuildBadWordIndexes() {
     longBadWords = [...new Set(longBadWords)];
 }
 
-/**
- * Findet ein Schimpfwort im Text.
- * @returns {string|null}
- */
 function findBadWord(text) {
     if (!text || badWordsOriginal.length === 0) return null;
-
     const lower = text.toLowerCase();
-
-    // Phase 1: klassische Wortgrenzen
     for (const word of badWordsOriginal) {
         if (word.length < 2) continue;
         const esc = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -88,31 +77,26 @@ function findBadWord(text) {
             const re = new RegExp('(?:^|[^\\p{L}\\p{N}_])' + esc + '(?:$|[^\\p{L}\\p{N}_])', 'iu');
             if (re.test(lower)) return word;
         } catch (_) {
-            const re2 = new RegExp('(?:^|[^a-zA-Z0-9\u00e4\u00f6\u00fc\u00c4\u00d6\u00dc\u00df])' + esc + '(?:$|[^a-zA-Z0-9\u00e4\u00f6\u00fc\u00c4\u00d6\u00dc\u00df])', 'i');
+            const re2 = new RegExp('(?:^|[^a-zA-Z0-9äöüÄÖÜß])' + esc + '(?:$|[^a-zA-Z0-9äöüÄÖÜß])', 'i');
             if (re2.test(lower)) return word;
         }
     }
-
-    // Phase 2: normalisierter Text
     const norm = normalizeForProfanity(text);
     const tokens = norm.split(/[^a-z0-9]+/).filter(t => t.length >= 2);
     const collapsedTokens = tokens.map(t => collapseRepeats(lettersOnly(t)));
     const letterTokens = tokens.map(t => lettersOnly(t));
     const fullLetters = lettersOnly(norm);
     const fullCollapsed = collapseRepeats(fullLetters);
-
     for (const t of letterTokens) {
         if (shortBadWords.has(t) || shortBadWords.has(collapseRepeats(t))) return t;
     }
     for (const t of collapsedTokens) {
         if (shortBadWords.has(t)) return t;
     }
-
     for (const word of longBadWords) {
         if (letterTokens.includes(word) || collapsedTokens.includes(word)) return word;
         if (word.length >= 5 && (fullLetters.includes(word) || fullCollapsed.includes(word))) return word;
     }
-
     return null;
 }
 
@@ -120,19 +104,22 @@ function containsBadWords(text) {
     return findBadWord(text) !== null;
 }
 
-module.exports = {
+export function setWordList(words) {
+    badWordsOriginal = words || [];
+    rebuildBadWordIndexes();
+}
+
+export function getWordCount() {
+    return badWordsOriginal.length;
+}
+
+export function getIndexSize() {
+    return badWordsSet.size;
+}
+
+export {
     containsBadWords,
     findBadWord,
     normalizeForProfanity,
-    rebuildBadWordIndexes,
-    setWordList(words) {
-        badWordsOriginal = words || [];
-        rebuildBadWordIndexes();
-    },
-    getWordCount() {
-        return badWordsOriginal.length;
-    },
-    getIndexSize() {
-        return badWordsSet.size;
-    }
+    rebuildBadWordIndexes
 };
