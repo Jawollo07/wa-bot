@@ -82,7 +82,6 @@ async function getChatSafe(msg, maxAttempts = 4) {
     let lastError;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        // Strategie A: Chat-Fenster öffnen (lädt das Chat-Model in den Store)
         try {
             if (client.interface?.openChatWindow) {
                 await client.interface.openChatWindow(chatId);
@@ -90,7 +89,6 @@ async function getChatSafe(msg, maxAttempts = 4) {
             }
         } catch (_) { /* ignore */ }
 
-        // Strategie B: msg.getChat()
         try {
             const chat = await msg.getChat();
             if (chat) return chat;
@@ -98,7 +96,6 @@ async function getChatSafe(msg, maxAttempts = 4) {
             lastError = err;
         }
 
-        // Strategie C: client.getChatById
         try {
             const chat = await client.getChatById(chatId);
             if (chat) return chat;
@@ -106,7 +103,6 @@ async function getChatSafe(msg, maxAttempts = 4) {
             lastError = err;
         }
 
-        // Strategie D: direkt über Puppeteer Store
         try {
             const chatData = await client.pupPage.evaluate(async (id) => {
                 const chat = window.Store?.Chat?.get(id)
@@ -128,7 +124,6 @@ async function getChatSafe(msg, maxAttempts = 4) {
             }, chatId);
 
             if (chatData) {
-                // Minimales Chat-ähnliches Objekt bauen
                 return {
                     id: { _serialized: chatId },
                     name: chatData.name,
@@ -140,12 +135,12 @@ async function getChatSafe(msg, maxAttempts = 4) {
                     })),
                     sendMessage: (content, options) => client.sendMessage(chatId, content, options),
                     removeParticipants: async (ids) => {
-                        const chat = await client.getChatById(chatId);
-                        return chat.removeParticipants(ids);
+                        const c = await client.getChatById(chatId);
+                        return c.removeParticipants(ids);
                     },
                     setMessagesAdminsOnly: async (flag) => {
-                        const chat = await client.getChatById(chatId);
-                        return chat.setMessagesAdminsOnly(flag);
+                        const c = await client.getChatById(chatId);
+                        return c.setMessagesAdminsOnly(flag);
                     }
                 };
             }
@@ -500,32 +495,34 @@ client.on('message', async (msg) => {
 
         console.log('[3] Prüfe Admin-Status...');
         let isAdmin = isBotOwner(senderId);
-        let isBotAdmin = false;
 
         if (chat && chat.participants) {
             const participants = chat.participants || [];
             const participant = participants.find(p => p.id._serialized === senderId);
             isAdmin = isAdmin || (participant ? (participant.isAdmin || participant.isSuperAdmin) : false);
-
-            const botId = client.info?.wid?._serialized;
-            const botParticipant = botId
-                ? participants.find(p => p.id._serialized === botId)
-                : null;
-            isBotAdmin = botParticipant
-                ? (botParticipant.isAdmin || botParticipant.isSuperAdmin)
-                : false;
-        } else if (isBotOwner(senderId)) {
-            isAdmin = true;
         }
 
+        // Admins: Befehle immer verarbeiten (auch wenn Bot inaktiv)
         console.log('[4] Verarbeite mögliche Befehle...');
         if (isAdmin && text.startsWith('!')) {
             const handled = await handleAdminCommands(msg, chat, settings, groupId);
-            if (handled) return;
+            if (handled) {
+                console.log('✅ Admin-Befehl ausgeführt.');
+                return;
+            }
+            console.log('ℹ️ Unbekannter Admin-Befehl.');
+            return;
         }
 
-        if (!settings.isActive || isAdmin) {
-            console.log('✅ Bot inaktiv oder Nutzer ist Admin. Ignoriere Nachricht.');
+        // Admins: normale Nachrichten nie moderieren
+        if (isAdmin) {
+            console.log('👤 Admin-Nachricht – Moderation übersprungen.');
+            return;
+        }
+
+        // Bot aus: normale User-Nachrichten ignorieren
+        if (!settings.isActive) {
+            console.log('🔴 Bot ist inaktiv – Nachricht ignoriert.');
             return;
         }
 
@@ -630,6 +627,8 @@ async function handleAdminCommands(msg, chat, settings, groupId) {
     const args = msg.body.trim().split(/\s+/);
     const command = args[0].toLowerCase();
 
+    // Alle Admin-Befehle funktionieren IMMER – auch wenn der Bot inaktiv ist
+
     if (command === '!bot') {
         const action = args[1]?.toLowerCase();
         if (action === 'on' || action === 'off') {
@@ -644,8 +643,6 @@ async function handleAdminCommands(msg, chat, settings, groupId) {
         await safeReply(msg, groupId, `ℹ️ Status: **${settings.isActive ? '🟢 AKTIV' : '🔴 INAKTIV'}**`);
         return true;
     }
-
-    if (!settings.isActive && command !== '!bot') return false;
 
     if (command === '!lock') {
         if (chat?.setMessagesAdminsOnly) {
