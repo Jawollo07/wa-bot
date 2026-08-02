@@ -288,57 +288,87 @@ client.on('group_leave', async (notification) => {
 client.on('message', async (msg) => {
     if (!msg.from.endsWith('@g.us')) return;
 
+    console.log('\n--- 📩 NEUE NACHRICHT EMPFANGEN ---');
+    console.log(`Text: "${msg.body || 'Kein Text (Medien/Sticker)'}"`);
+
     try {
+        console.log('[1] Lade Chat-Datenbank...');
         const chat = await msg.getChat();
         if (!chat) return;
 
+        console.log('[2] Lade Einstellungen & Teilnehmer...');
         const groupId = chat.id._serialized;
         const senderId = msg.author || msg.from;
-        const participant = chat.participants.find(p => p.id._serialized === senderId);
-        const isAdmin = participant ? (participant.isAdmin || participant.isSuperAdmin) : false;
         const settings = await getGroupSettings(groupId);
 
-        // 1. Admin Commands
-        if (isAdmin && msg.body.startsWith('!')) {
-            const handled = await handleAdminCommands(msg, chat, settings);
+        console.log('[3] Prüfe Admin-Status...');
+        const participants = chat.participants || [];
+        const participant = participants.find(p => p.id._serialized === senderId);
+        const isAdmin = participant ? (participant.isAdmin || participant.isSuperAdmin) : false;
+        
+        // Prüfen, ob der Bot selbst Admin ist
+        const botId = client.info.wid._serialized;
+        const botParticipant = participants.find(p => p.id._serialized === botId);
+        const isBotAdmin = botParticipant ? (botParticipant.isAdmin || botParticipant.isSuperAdmin) : false;
+
+        const text = msg.body || '';
+
+        console.log('[4] Verarbeite mögliche Befehle...');
+        if (isAdmin && text.startsWith('!')) {
+            const handled = await handleAdminCommands(msg, chat, settings, text);
             if (handled) return;
         }
 
-        if (!settings.isActive || isAdmin) return;
+        if (!settings.isActive || isAdmin) {
+            console.log('✅ Bot inaktiv oder Nutzer ist Admin. Ignoriere Nachricht.');
+            return;
+        }
 
-        // 2. Mute Check (Löscht Nachricht sofort, ohne Warnung)
+        console.log('[5] Prüfe auf Stummschaltung (Mute)...');
         if (await isMuted(groupId, senderId)) {
+            if (!isBotAdmin) {
+                console.log('⚠️ Kann stummgeschalteten User nicht blockieren: Bot ist kein Admin!');
+                return;
+            }
             await msg.delete(true);
             return;
         }
 
-        // 3. Moderations-Checks
+        console.log('[6] Prüfe auf Regelverstöße (Spam, Filter, etc.)...');
         let violationReason = null;
 
-        if (settings.antiSpam && isSpamming(groupId, senderId)) violationReason = 'Spam-Schutz: Zu viele Nachrichten in kurzer Zeit.';
+        if (settings.antiSpam && isSpamming(groupId, senderId)) {
+            violationReason = 'Spam-Schutz: Zu viele Nachrichten.';
+        }
         
-        // Medien Kontrolle
         if (!violationReason) {
-            if (!settings.allowStickers && msg.type === 'sticker') violationReason = 'Sticker sind deaktiviert.';
-            else if (!settings.allowImages && msg.type === 'image') violationReason = 'Bilder sind deaktiviert.';
-            else if (!settings.allowVideos && msg.type === 'video') violationReason = 'Videos sind deaktiviert.';
-            else if (!settings.allowAudios && (msg.type === 'audio' || msg.type === 'ptt')) violationReason = 'Sprachnachrichten/Audios sind deaktiviert.';
+            if (!settings.allowStickers && msg.type === 'sticker') violationReason = 'Sticker deaktiviert.';
+            else if (!settings.allowImages && msg.type === 'image') violationReason = 'Bilder deaktiviert.';
+            else if (!settings.allowVideos && msg.type === 'video') violationReason = 'Videos deaktiviert.';
+            else if (!settings.allowAudios && (msg.type === 'audio' || msg.type === 'ptt')) violationReason = 'Audios deaktiviert.';
         }
 
-        if (!violationReason && !settings.allowLinks && msg.body && /(https?:\/\/[^\s]+|chat\.whatsapp\.com\/[a-zA-Z0-9]+)/i.test(msg.body)) {
-            violationReason = 'Das Teilen von Links ist nicht gestattet.';
+        if (!violationReason && !settings.allowLinks && text && /(https?:\/\/[^\s]+|chat\.whatsapp\.com\/[a-zA-Z0-9]+)/i.test(text)) {
+            violationReason = 'Links sind nicht gestattet.';
         }
 
-        if (!violationReason && msg.body && containsBadWords(msg.body)) {
-            violationReason = 'Unerwünschte Sprache / Schimpfwort erkannt.';
+        if (!violationReason && text && containsBadWords(text)) {
+            violationReason = 'Schimpfwort erkannt.';
         }
 
         if (violationReason) {
+            console.log(`🚨 Regelverstoß erkannt: ${violationReason}`);
+            if (!isBotAdmin) {
+                console.log('⚠️ Moderation abgebrochen: Bot hat keine Admin-Rechte!');
+                return;
+            }
             await handleViolation(msg, chat, senderId, violationReason, settings.maxWarnings);
+        } else {
+            console.log('✅ Nachricht ist sauber.');
         }
 
     } catch (error) {
-        console.error('⚠️ Fehler bei der Nachrichtenverarbeitung:', error.message);
+        console.error('⚠️ ABSTURZ BEI SCHRITT-VERARBEITUNG! Fehler:', error.stack || error);
     }
 });
 
