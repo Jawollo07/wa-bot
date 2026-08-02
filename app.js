@@ -93,7 +93,36 @@ async function getChatSafe(msg, maxAttempts = 3) {
 }
 
 /**
- * Initialisiert die erweiterte Datenbank
+ * Fügt fehlende Spalten zu einer bestehenden Tabelle hinzu (Migration).
+ */
+async function ensureColumn(table, column, definition) {
+    try {
+        const [rows] = await dbPool.query(
+            `SELECT COUNT(*) AS cnt FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = ?
+               AND COLUMN_NAME = ?`,
+            [table, column]
+        );
+        if (rows[0].cnt === 0) {
+            await dbPool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+            console.log(`  ➕ Spalte ${table}.${column} hinzugefügt`);
+        }
+    } catch (err) {
+        // Fallback: ALTER versuchen und „Duplicate column“ ignorieren
+        try {
+            await dbPool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+            console.log(`  ➕ Spalte ${table}.${column} hinzugefügt`);
+        } catch (e) {
+            if (!String(e.message || e).includes('Duplicate column')) {
+                console.error(`  ⚠️ Migration ${table}.${column}:`, e.message || e);
+            }
+        }
+    }
+}
+
+/**
+ * Initialisiert die erweiterte Datenbank + Migration bestehender Tabellen
  */
 async function initDatabase() {
     try {
@@ -138,6 +167,20 @@ async function initDatabase() {
                 leave_msg TEXT
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         `);
+
+        // Migration: fehlende Spalten bei bestehender group_settings-Tabelle nachziehen
+        console.log('🔄 Prüfe group_settings-Schema...');
+        await ensureColumn('group_settings', 'is_active', 'TINYINT(1) DEFAULT 0');
+        await ensureColumn('group_settings', 'allow_links', 'TINYINT(1) DEFAULT 0');
+        await ensureColumn('group_settings', 'allow_stickers', 'TINYINT(1) DEFAULT 0');
+        await ensureColumn('group_settings', 'allow_images', 'TINYINT(1) DEFAULT 1');
+        await ensureColumn('group_settings', 'allow_videos', 'TINYINT(1) DEFAULT 1');
+        await ensureColumn('group_settings', 'allow_audios', 'TINYINT(1) DEFAULT 1');
+        await ensureColumn('group_settings', 'anti_spam', 'TINYINT(1) DEFAULT 1');
+        await ensureColumn('group_settings', 'max_warnings', 'INT DEFAULT 3');
+        await ensureColumn('group_settings', 'welcome_active', 'TINYINT(1) DEFAULT 0');
+        await ensureColumn('group_settings', 'welcome_msg', 'TEXT');
+        await ensureColumn('group_settings', 'leave_msg', 'TEXT');
 
         await dbPool.query(`
             CREATE TABLE IF NOT EXISTS mod_logs (
@@ -234,19 +277,20 @@ async function getGroupSettings(groupId) {
         );
         return { ...CONFIG.defaultSettings, groupId };
     }
+    const r = rows[0];
     return {
-        groupId: rows[0].group_id,
-        isActive: Boolean(rows[0].is_active),
-        allowLinks: Boolean(rows[0].allow_links),
-        allowStickers: Boolean(rows[0].allow_stickers),
-        allowImages: Boolean(rows[0].allow_images),
-        allowVideos: Boolean(rows[0].allow_videos),
-        allowAudios: Boolean(rows[0].allow_audios),
-        antiSpam: Boolean(rows[0].anti_spam),
-        maxWarnings: rows[0].max_warnings,
-        welcomeActive: Boolean(rows[0].welcome_active),
-        welcomeMsg: rows[0].welcome_msg,
-        leaveMsg: rows[0].leave_msg
+        groupId: r.group_id,
+        isActive: Boolean(r.is_active),
+        allowLinks: Boolean(r.allow_links),
+        allowStickers: Boolean(r.allow_stickers),
+        allowImages: r.allow_images === undefined ? true : Boolean(r.allow_images),
+        allowVideos: r.allow_videos === undefined ? true : Boolean(r.allow_videos),
+        allowAudios: r.allow_audios === undefined ? true : Boolean(r.allow_audios),
+        antiSpam: r.anti_spam === undefined ? true : Boolean(r.anti_spam),
+        maxWarnings: r.max_warnings ?? CONFIG.defaultSettings.maxWarnings,
+        welcomeActive: Boolean(r.welcome_active),
+        welcomeMsg: r.welcome_msg || CONFIG.defaultSettings.welcomeMsg,
+        leaveMsg: r.leave_msg || CONFIG.defaultSettings.leaveMsg
     };
 }
 
@@ -352,8 +396,8 @@ client.on('group_join', async (notification) => {
         const chat = await client.getChatById(groupId);
         for (const userId of notification.recipientIds) {
             const contact = await client.getContactById(userId);
-            const msg = settings.welcomeMsg.replace('@user', `@${contact.number}`);
-            await chat.sendMessage(msg, { mentions: [contact] });
+            const msgText = settings.welcomeMsg.replace('@user', `@${contact.number}`);
+            await chat.sendMessage(msgText, { mentions: [contact] });
         }
     } catch (err) {
         console.error('Fehler bei group_join:', err.message || err);
@@ -598,9 +642,7 @@ async function handleAdminCommands(msg, chat, settings) {
 
         if (validOptions[option]) {
             const field = validOptions[option];
-            // camelCase Key aus snake_case ableiten
             const camelKey = field.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
-            // allow_links -> allowLinks
             const currentVal = settings[camelKey];
             const newVal = !currentVal;
             await dbPool.query(
