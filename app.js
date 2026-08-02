@@ -189,6 +189,18 @@ async function initDatabase() {
     await ensureColumn('group_settings', 'leave_msg', 'TEXT');
     await dbPool.query('CREATE TABLE IF NOT EXISTS mod_logs (id INT AUTO_INCREMENT PRIMARY KEY, group_id VARCHAR(191) NOT NULL, user_id VARCHAR(191) NOT NULL, action VARCHAR(50) NOT NULL, reason TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX idx_group (group_id), INDEX idx_created (created_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
     await dbPool.query('CREATE TABLE IF NOT EXISTS muted_users (group_id VARCHAR(191) NOT NULL, user_id VARCHAR(191) NOT NULL, muted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (group_id, user_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+    await dbPool.query(
+        'CREATE TABLE IF NOT EXISTS banned_users (' +
+        'group_id VARCHAR(191) NOT NULL,' +
+        'user_id VARCHAR(191) NOT NULL,' +
+        'banned_until DATETIME NULL,' +
+        'reason TEXT,' +
+        'banned_by VARCHAR(191),' +
+        'banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,' +
+        'PRIMARY KEY (group_id, user_id),' +
+        'INDEX idx_until (banned_until)' +
+        ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+    );
     log('✅ MySQL-Datenbank erfolgreich initialisiert!');
 }
 
@@ -287,6 +299,78 @@ async function getWarningCount(groupId, userId) {
 async function isMuted(groupId, userId) {
     const [rows] = await dbPool.query('SELECT 1 FROM muted_users WHERE group_id = ? AND user_id = ?', [groupId, userId]);
     return rows.length > 0;
+}
+
+function parseBanDuration(str) {
+    if (!str) return { until: null, label: 'permanent' };
+    const s = String(str).toLowerCase().trim();
+    if (['permanent', 'perm', 'perma', 'permament', 'forever', 'ewig'].includes(s)) {
+        return { until: null, label: 'permanent' };
+    }
+    const m = s.match(/^(\d+)\s*(m|min|h|d|w)$/i) || s.match(/^(\d+)(m|min|h|d|w)$/i);
+    if (!m) return null;
+    const n = parseInt(m[1], 10);
+    const unit = m[2].toLowerCase();
+    let ms = 0;
+    if (unit === 'm' || unit === 'min') ms = n * 60_000;
+    else if (unit === 'h') ms = n * 3_600_000;
+    else if (unit === 'd') ms = n * 86_400_000;
+    else if (unit === 'w') ms = n * 7 * 86_400_000;
+    if (ms <= 0) return null;
+    return { until: new Date(Date.now() + ms), label: n + unit };
+}
+
+async function validateBanRow(row, groupId) {
+    if (row.banned_until) {
+        const until = new Date(row.banned_until);
+        if (until.getTime() <= Date.now()) {
+            await dbPool.query('DELETE FROM banned_users WHERE group_id = ? AND user_id = ?', [groupId, row.user_id]);
+            return null;
+        }
+    }
+    return row;
+}
+
+async function getActiveBan(groupId, userId) {
+    const [rows] = await dbPool.query(
+        'SELECT * FROM banned_users WHERE group_id = ? AND user_id = ?',
+        [groupId, userId]
+    );
+    if (rows.length) return validateBanRow(rows[0], groupId);
+    const phone = normalizePhone(userId);
+    if (phone.length >= 8) {
+        const [rows2] = await dbPool.query(
+            "SELECT * FROM banned_users WHERE group_id = ? AND REPLACE(REPLACE(user_id, '@s.whatsapp.net', ''), '@lid', '') LIKE ?",
+            [groupId, '%' + phone + '%']
+        );
+        if (rows2.length) return validateBanRow(rows2[0], groupId);
+    }
+    return null;
+}
+
+async function banUser(groupId, userId, until, reason, bannedBy) {
+    await dbPool.query(
+        'INSERT INTO banned_users (group_id, user_id, banned_until, reason, banned_by) VALUES (?, ?, ?, ?, ?) ' +
+        'ON DUPLICATE KEY UPDATE banned_until = VALUES(banned_until), reason = VALUES(reason), banned_by = VALUES(banned_by), banned_at = CURRENT_TIMESTAMP',
+        [groupId, userId, until, reason || null, bannedBy || null]
+    );
+}
+
+async function unbanUser(groupId, userId) {
+    await dbPool.query('DELETE FROM banned_users WHERE group_id = ? AND user_id = ?', [groupId, userId]);
+    const phone = normalizePhone(userId);
+    if (phone.length >= 8) {
+        await dbPool.query(
+            "DELETE FROM banned_users WHERE group_id = ? AND REPLACE(REPLACE(user_id, '@s.whatsapp.net', ''), '@lid', '') LIKE ?",
+            [groupId, '%' + phone + '%']
+        );
+    }
+}
+
+function formatBanUntil(row) {
+    if (!row.banned_until) return 'permanent';
+    const d = new Date(row.banned_until);
+    return d.toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
 }
 
 function formatUptime(ms) {
@@ -485,6 +569,77 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
         await reply('⚙️ **Gruppen-Einstellungen**\n\n• Status: ' + (settings.isActive ? '🟢' : '🔴') + '\n• Willkommen: ' + (settings.welcomeActive ? '✅' : '❌') + '\n• Links: ' + (settings.allowLinks ? '✅' : '❌') + ' | Sticker: ' + (settings.allowStickers ? '✅' : '❌') + '\n• Bilder: ' + (settings.allowImages ? '✅' : '❌') + ' | Videos: ' + (settings.allowVideos ? '✅' : '❌') + '\n• Audio: ' + (settings.allowAudios ? '✅' : '❌') + ' | Anti-Spam: ' + (settings.antiSpam ? '✅' : '❌') + '\n• Max. Verwarnungen: ' + settings.maxWarnings);
         return true;
     }
+    if (command === p + 'ban') {
+        if (mentions.length === 0) {
+            await reply('⚠️ Nutzung:\n• `' + p + 'ban @User` – permanent\n• `' + p + 'ban @User 1h` – 1 Stunde\n• `' + p + 'ban @User 2d spam` – 2 Tage + Grund\n• Dauer: 30m, 2h, 1d, 7d, permanent');
+            return true;
+        }
+        const target = mentions[0];
+        if (isParticipantAdmin(meta, target) || isBotOwner(target)) {
+            await reply('⚠️ Admins/Owner können nicht gebannt werden.');
+            return true;
+        }
+        let durationArg = null;
+        const reasonParts = [];
+        for (const a of args.slice(1)) {
+            if (a.startsWith('@')) continue;
+            if (durationArg === null && parseBanDuration(a) !== null) {
+                durationArg = a;
+                continue;
+            }
+            reasonParts.push(a);
+        }
+        const parsed = parseBanDuration(durationArg);
+        if (durationArg && parsed === null) {
+            await reply('⚠️ Ungültige Dauer. Beispiele: `1h`, `2d`, `7d`, `permanent`');
+            return true;
+        }
+        const until = parsed ? parsed.until : null;
+        const label = parsed ? parsed.label : 'permanent';
+        const reason = reasonParts.join(' ').trim() || 'Manueller Ban';
+        const untilSql = until ? until.toISOString().slice(0, 19).replace('T', ' ') : null;
+        await banUser(groupId, target, untilSql, reason, senderId);
+        await logAction(groupId, target, 'BAN', reason + ' (' + label + ')');
+        try {
+            await sock.groupParticipantsUpdate(groupId, [target], 'remove');
+        } catch (e) {
+            log('⚠️ Ban-Kick: ' + (e.message || e));
+        }
+        await reply('🚫 User gebannt (' + label + ').\nGrund: ' + reason + '\nBei Wiedereintritt wird automatisch gekickt.', [target]);
+        return true;
+    }
+    if (command === p + 'unban') {
+        if (mentions.length === 0) {
+            await reply('⚠️ Nutzung: `' + p + 'unban @User`');
+            return true;
+        }
+        const target = mentions[0];
+        await unbanUser(groupId, target);
+        await logAction(groupId, target, 'UNBAN', 'Manuell');
+        await reply('✅ Ban aufgehoben.', [target]);
+        return true;
+    }
+    if (command === p + 'banned') {
+        const [rows] = await dbPool.query(
+            'SELECT user_id, banned_until, reason FROM banned_users WHERE group_id = ? ORDER BY banned_at DESC LIMIT 30',
+            [groupId]
+        );
+        const active = [];
+        for (const r of rows) {
+            const v = await validateBanRow(r, groupId);
+            if (v) active.push(v);
+        }
+        if (active.length === 0) {
+            await reply('📋 Niemand ist gebannt.');
+            return true;
+        }
+        const list = active.map(r => {
+            const id = r.user_id.split('@')[0];
+            return '• ' + id + ' – ' + formatBanUntil(r) + (r.reason ? ' (' + r.reason + ')' : '');
+        }).join('\n');
+        await reply('📋 **Gebannt (' + active.length + '):**\n' + list);
+        return true;
+    }
     if (command === p + 'kick') {
         if (mentions.length === 0) {
             await reply('⚠️ Nutzung: `' + p + 'kick @User`');
@@ -548,7 +703,7 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
         return true;
     }
     if (command === p + 'help') {
-        await reply('🛠 **Admin-Befehle (Baileys v3)**\n\n• `' + p + 'bot on/off`\n• `' + p + 'settings` / `' + p + 'stats` / `' + p + 'info` / `' + p + 'ping`\n• `' + p + 'toggle <links|stickers|images|videos|audios|antispam|welcome>`\n• `' + p + 'maxwarns <1-20>`\n• `' + p + 'setwelcome` / `' + p + 'setleave`\n• `' + p + 'lock` / `' + p + 'unlock`\n• `' + p + 'mute` / `' + p + 'unmute` / `' + p + 'muted`\n• `' + p + 'kick`\n• `' + p + 'warns` / `' + p + 'resetwarns` / `' + p + 'clearwarns`\n• `' + p + 'addword` / `' + p + 'delword`');
+        await reply('🛠 **Admin-Befehle (Baileys v3)**\n\n• `' + p + 'bot on/off`\n• `' + p + 'settings` / `' + p + 'stats` / `' + p + 'info` / `' + p + 'ping`\n• `' + p + 'toggle <links|stickers|images|videos|audios|antispam|welcome>`\n• `' + p + 'maxwarns <1-20>`\n• `' + p + 'setwelcome` / `' + p + 'setleave`\n• `' + p + 'lock` / `' + p + 'unlock`\n• `' + p + 'mute` / `' + p + 'unmute` / `' + p + 'muted`\n• `' + p + 'ban @User [Dauer] [Grund]` / `' + p + 'unban` / `' + p + 'banned`\n• `' + p + 'kick`\n• `' + p + 'warns` / `' + p + 'resetwarns` / `' + p + 'clearwarns`\n• `' + p + 'addword` / `' + p + 'delword`');
         return true;
     }
     return false;
@@ -557,18 +712,36 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
 async function onGroupParticipantsUpdate(update) {
     try {
         const groupId = update.id;
-        const settings = await getGroupSettings(groupId);
-        if (!settings.isActive || !settings.welcomeActive) return;
+        groupMetaCache.delete(groupId);
+
         if (update.action === 'add') {
             for (const userId of update.participants || []) {
-                const num = normalizePhone(userId) || userId.split('@')[0];
-                const text = settings.welcomeMsg.replace(/@user/gi, '@' + num);
-                await sendText(groupId, text, [userId]);
+                const ban = await getActiveBan(groupId, userId);
+                if (ban) {
+                    log('🚫 Gebannter User rejoined → Kick: ' + userId);
+                    try {
+                        await sock.groupParticipantsUpdate(groupId, [userId], 'remove');
+                        await logAction(groupId, userId, 'BAN_REKICK', ban.reason || 'Auto-Kick (Ban)');
+                        const num = normalizePhone(userId) || userId.split('@')[0];
+                        await sendText(groupId, '🚫 @' + num + ' ist gebannt und wurde erneut entfernt.\nBis: ' + formatBanUntil(ban), [userId]);
+                    } catch (e) {
+                        console.error('Ban-Rekick fehlgeschlagen:', e.message || e);
+                    }
+                    continue;
+                }
+                const settings = await getGroupSettings(groupId);
+                if (settings.isActive && settings.welcomeActive) {
+                    const num = normalizePhone(userId) || userId.split('@')[0];
+                    const t = settings.welcomeMsg.replace(/@user/gi, '@' + num);
+                    await sendText(groupId, t, [userId]);
+                }
             }
         } else if (update.action === 'remove') {
-            await sendText(groupId, settings.leaveMsg);
+            const settings = await getGroupSettings(groupId);
+            if (settings.isActive && settings.welcomeActive) {
+                await sendText(groupId, settings.leaveMsg);
+            }
         }
-        groupMetaCache.delete(groupId);
     } catch (e) {
         console.error('group participants update:', e.message || e);
     }
