@@ -870,7 +870,7 @@ async function startSocket() {
         }
         if (connection === 'open') {
             botStartTime = Date.now();
-            log('🤖 Moderations-Bot v3.0.0 (Baileys) ist einsatzbereit!');
+            log('🤖 Moderations-Bot v3.1.0 ist einsatzbereit!');
         }
         if (connection === 'close') {
             const statusCode = (lastDisconnect?.error instanceof Boom)
