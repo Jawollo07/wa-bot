@@ -23,6 +23,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import * as profanity from './profanity.js';
+import { handleKiCommand, checkOllama, getKiConfig } from './ollama.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PREFIX = process.env.COMMAND_PREFIX || '!';
@@ -544,7 +545,17 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
         return true;
     }
     if (command === p + 'info') {
-        await reply('🤖 *wa-bot v3.1.0 (Baileys)*\n• Uptime: ' + formatUptime(Date.now() - botStartTime) + '\n• Nachrichten: ' + stats.messages + '\n• Verstöße: ' + stats.violations + '\n• Befehle: ' + stats.commands + '\n• Schimpfwörter: ' + loadedBadWords.length + '\n• Gruppe: ' + (settings.isActive ? '🟢 aktiv' : '🔴 inaktiv'));
+        const ki = getKiConfig();
+        await reply(
+            '🤖 *wa-bot v3.2.0 (Baileys + Ollama)*\n' +
+            '• Uptime: ' + formatUptime(Date.now() - botStartTime) + '\n' +
+            '• Nachrichten: ' + stats.messages + '\n' +
+            '• Verstöße: ' + stats.violations + '\n' +
+            '• Befehle: ' + stats.commands + '\n' +
+            '• Schimpfwörter: ' + loadedBadWords.length + '\n' +
+            '• Gruppe: ' + (settings.isActive ? '🟢 aktiv' : '🔴 inaktiv') + '\n' +
+            '• KI: ' + (ki.enabled ? '✅ (' + ki.model + ')' : '❌ deaktiviert')
+        );
         return true;
     }
     if (command === p + 'stats') {
@@ -817,7 +828,24 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
         return true;
     }
     if (command === p + 'help') {
-        await reply('🛠 *Admin-Befehle (Baileys v3)*\n\n• `' + p + 'bot on/off`\n• `' + p + 'settings` / `' + p + 'stats` / `' + p + 'info` / `' + p + 'ping` / `' + p + 'logs [n]`\n• `' + p + 'toggle <links|stickers|images|videos|audios|antispam|welcome>`\n• `' + p + 'maxwarns <1-20>`\n• `' + p + 'setwelcome` / `' + p + 'setleave`\n• `' + p + 'lock` / `' + p + 'unlock`\n• `' + p + 'mute` / `' + p + 'unmute` / `' + p + 'muted`\n• `' + p + 'ban @User [Dauer] [Grund]` / `' + p + 'unban` / `' + p + 'banned`\n• `' + p + 'kick`\n• `' + p + 'warns` / `' + p + 'resetwarns` / `' + p + 'clearwarns`\n• `' + p + 'addword` / `' + p + 'delword`');
+        await reply(
+            '🛠 *Admin-Befehle (Baileys v3)*\n\n' +
+            '• `' + p + 'bot on/off`\n' +
+            '• `' + p + 'settings` / `' + p + 'stats` / `' + p + 'info` / `' + p + 'ping` / `' + p + 'logs [n]`\n' +
+            '• `' + p + 'toggle <links|stickers|images|videos|audios|antispam|welcome>`\n' +
+            '• `' + p + 'maxwarns <1-20>`\n' +
+            '• `' + p + 'setwelcome` / `' + p + 'setleave`\n' +
+            '• `' + p + 'lock` / `' + p + 'unlock`\n' +
+            '• `' + p + 'mute` / `' + p + 'unmute` / `' + p + 'muted`\n' +
+            '• `' + p + 'ban @User [Dauer] [Grund]` / `' + p + 'unban` / `' + p + 'banned`\n' +
+            '• `' + p + 'kick`\n' +
+            '• `' + p + 'warns` / `' + p + 'resetwarns` / `' + p + 'clearwarns`\n' +
+            '• `' + p + 'addword` / `' + p + 'delword`\n\n' +
+            '🤖 *KI (Ollama)* – für alle Nutzer:\n' +
+            '• `' + p + 'ki <Frage>` – Ollama fragen\n' +
+            '• `' + p + 'kistatus` – Status & Modell\n' +
+            '• `' + p + 'resetki` – Memory dieses Chats löschen'
+        );
         return true;
     }
     return false;
@@ -899,6 +927,38 @@ async function onIncomingMessage(msg) {
                 return;
             }
         }
+
+        // ===== KI-Modul (!ki / !kistatus / !resetki) – modular aus ollama.js =====
+        // Erlaubt für alle Nutzer, sobald der Bot in der Gruppe aktiv ist
+        // (oder Admin-Befehle, auch wenn Bot inaktiv – Status prüfen bleibt sinnvoll)
+        if (text.startsWith(PREFIX)) {
+            const lower = text.trim().toLowerCase();
+            const p = PREFIX;
+            const isKiCmd =
+                lower === p + 'ki' ||
+                lower.startsWith(p + 'ki ') ||
+                lower === p + 'kistatus' ||
+                lower === p + 'resetki';
+
+            if (isKiCmd) {
+                // !kistatus immer erlauben; !ki / !resetki nur wenn Gruppe aktiv
+                const needsActive = !(lower === p + 'kistatus' || (lower.startsWith(p + 'ki ') && text.trim().split(/\s+/)[1]?.toLowerCase() === 'status'));
+                if (needsActive && !settings.isActive) {
+                    log('🔴 KI-Befehl ignoriert – Bot inaktiv (group=' + groupId + ')');
+                    return;
+                }
+                const pushName = msg.pushName || 'User';
+                const handled = await handleKiCommand(sock, msg, groupId, senderId, text, pushName);
+                if (handled) {
+                    stats.commands++;
+                    log('✅ KI-Befehl ausgeführt');
+                    const cmdName = text.trim().split(/\s+/)[0].toLowerCase();
+                    await logAction(groupId, senderId, 'COMMAND', cmdName, senderId);
+                    return;
+                }
+            }
+        }
+
         if (!settings.isActive) {
             log('🔴 Bot inaktiv (group=' + groupId + ')');
             return;
@@ -1018,6 +1078,23 @@ async function startBot() {
         await initDatabase();
         await logAction(SYSTEM_GROUP, 'bot', 'BOT_START', 'Bot startet', 'system');
         await syncAndLoadBadWords();
+
+        // Ollama-Healthcheck (nicht blockierend – Bot läuft auch ohne KI)
+        const kiCfg = getKiConfig();
+        if (kiCfg.enabled) {
+            const info = await checkOllama();
+            if (info.ok) {
+                log('🤖 Ollama OK – Host: ' + info.host + ' | Modell: ' + info.model +
+                    (info.hasModel ? '' : ' ⚠️ Modell nicht gefunden') +
+                    ' | Verfügbar: ' + (info.models.slice(0, 5).join(', ') || '–'));
+            } else {
+                log('⚠️ Ollama nicht erreichbar (' + info.host + '): ' + (info.error || 'offline') +
+                    ' – !ki ist deaktiviert bis Ollama läuft');
+            }
+        } else {
+            log('🤖 KI deaktiviert (KI_ENABLED=false)');
+        }
+
         await startSocket();
     } catch (err) {
         console.error('❌ Start fehlgeschlagen:', err);
