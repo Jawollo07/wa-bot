@@ -5,6 +5,7 @@ node_modules/
 .env2
 auth_baileys/
 auth_info/
+ki_memory/
 .wwebjs_auth/
 .wwebjs_cache/
 *.log
