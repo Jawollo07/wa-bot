@@ -420,12 +420,12 @@ async function handleViolation(msg, meta, groupId, senderId, reason, maxWarnings
 
         if (currentWarns >= maxWarnings) {
             if (isAdmin || isParticipantAdmin(meta, senderId)) {
-                await sendText(groupId, '⛔ @' + number + ' hat max. Verwarnungen erreicht, wird als **Admin** nicht gekickt.\n**Grund:** ' + reason, [senderId]);
+                await sendText(groupId, '⛔ @' + number + ' hat max. Verwarnungen erreicht, wird als *Admin* nicht gekickt.\n*Grund:* ' + reason, [senderId]);
                 await resetWarnings(groupId, senderId);
                 await logAction(groupId, senderId, 'WARN_MAX_ADMIN', reason);
                 return;
             }
-            await sendText(groupId, '⛔ @' + number + ' wurde automatisch gekickt.\n**Grund:** Maximale Verwarnungen erreicht.', [senderId]);
+            await sendText(groupId, '⛔ @' + number + ' wurde automatisch gekickt.\n*Grund:* Maximale Verwarnungen erreicht.', [senderId]);
             try {
                 await sock.groupParticipantsUpdate(groupId, [senderId], 'remove');
             } catch (e) {
@@ -436,7 +436,7 @@ async function handleViolation(msg, meta, groupId, senderId, reason, maxWarnings
         } else {
             await sendText(
                 groupId,
-                '⚠️ @' + number + ', deine Nachricht wurde entfernt.\n**Grund:** ' + reason + '\n**Verwarnung:** ' + currentWarns + '/' + maxWarnings,
+                '⚠️ @' + number + ', deine Nachricht wurde entfernt.\n*Grund:* ' + reason + '\n*Verwarnung:* ' + currentWarns + '/' + maxWarnings,
                 [senderId]
             );
         }
@@ -468,11 +468,11 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
                 [groupId, state]
             );
             log('⚙️ is_active=' + state + ' für ' + groupId);
-            await reply(state ? '🟢 **Bot aktiviert!**' : '🔴 **Bot deaktiviert!**');
+            await reply(state ? '🟢 *Bot aktiviert!*' : '🔴 *Bot deaktiviert!*');
             return true;
         }
         const fresh = await getGroupSettings(groupId);
-        await reply('ℹ️ Status: **' + (fresh.isActive ? '🟢 AKTIV' : '🔴 INAKTIV') + '**\nGruppe: `' + groupId + '`');
+        await reply('ℹ️ Status: *' + (fresh.isActive ? '🟢 AKTIV' : '🔴 INAKTIV') + '*\nGruppe: `' + groupId + '`');
         return true;
     }
     if (command === p + 'ping') {
@@ -481,20 +481,20 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
         return true;
     }
     if (command === p + 'info') {
-        await reply('🤖 **wa-bot v3.0.0 (Baileys)**\n• Uptime: ' + formatUptime(Date.now() - botStartTime) + '\n• Nachrichten: ' + stats.messages + '\n• Verstöße: ' + stats.violations + '\n• Befehle: ' + stats.commands + '\n• Schimpfwörter: ' + loadedBadWords.length + '\n• Gruppe: ' + (settings.isActive ? '🟢 aktiv' : '🔴 inaktiv'));
+        await reply('🤖 *wa-bot v3.1.0 (Baileys)*\n• Uptime: ' + formatUptime(Date.now() - botStartTime) + '\n• Nachrichten: ' + stats.messages + '\n• Verstöße: ' + stats.violations + '\n• Befehle: ' + stats.commands + '\n• Schimpfwörter: ' + loadedBadWords.length + '\n• Gruppe: ' + (settings.isActive ? '🟢 aktiv' : '🔴 inaktiv'));
         return true;
     }
     if (command === p + 'stats') {
         const [warnRows] = await dbPool.query('SELECT COUNT(*) AS c, COALESCE(SUM(warn_count),0) AS total FROM warnings WHERE group_id = ?', [groupId]);
         const [muteRows] = await dbPool.query('SELECT COUNT(*) AS c FROM muted_users WHERE group_id = ?', [groupId]);
         const [logRows] = await dbPool.query('SELECT COUNT(*) AS c FROM mod_logs WHERE group_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)', [groupId]);
-        await reply('📊 **Gruppen-Statistik**\n• Verwarnte User: ' + warnRows[0].c + '\n• Summe Verwarnungen: ' + warnRows[0].total + '\n• Stummgeschaltet: ' + muteRows[0].c + '\n• Mod-Aktionen (24h): ' + logRows[0].c + '\n• Max. Warns: ' + settings.maxWarnings);
+        await reply('📊 *Gruppen-Statistik*\n• Verwarnte User: ' + warnRows[0].c + '\n• Summe Verwarnungen: ' + warnRows[0].total + '\n• Stummgeschaltet: ' + muteRows[0].c + '\n• Mod-Aktionen (24h): ' + logRows[0].c + '\n• Max. Warns: ' + settings.maxWarnings);
         return true;
     }
     if (command === p + 'lock') {
         try {
             await sock.groupSettingUpdate(groupId, 'announcement');
-            await reply('🔒 **Gruppe gesperrt.** Nur noch Admins können schreiben.');
+            await reply('🔒 *Gruppe gesperrt.* Nur noch Admins können schreiben.');
         } catch (e) {
             await reply('❌ Lock fehlgeschlagen: ' + (e.message || e));
         }
@@ -503,7 +503,7 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
     if (command === p + 'unlock') {
         try {
             await sock.groupSettingUpdate(groupId, 'not_announcement');
-            await reply('🔓 **Gruppe entsperrt.**');
+            await reply('🔓 *Gruppe entsperrt.*');
         } catch (e) {
             await reply('❌ Unlock fehlgeschlagen: ' + (e.message || e));
         }
@@ -537,7 +537,7 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
             return true;
         }
         const list = rows.map(r => '• ' + r.user_id.split('@')[0]).join('\n');
-        await reply('📋 **Stummgeschaltet (' + rows.length + '):**\n' + list);
+        await reply('📋 *Stummgeschaltet (' + rows.length + '):*\n' + list);
         return true;
     }
     if (command === p + 'toggle' && args[1]) {
@@ -548,7 +548,7 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
             const camelKey = field.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
             const newVal = !settings[camelKey];
             await dbPool.query('UPDATE group_settings SET ' + field + ' = ? WHERE group_id = ?', [newVal ? 1 : 0, groupId]);
-            await reply('✅ **' + option + '** ist jetzt: ' + (newVal ? 'AN ✅' : 'AUS ❌'));
+            await reply('✅ *' + option + '* ist jetzt: ' + (newVal ? 'AN ✅' : 'AUS ❌'));
         } else {
             await reply('⚠️ Optionen: links, stickers, images, videos, audios, antispam, welcome');
         }
@@ -561,7 +561,7 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
             return true;
         }
         await dbPool.query('UPDATE group_settings SET max_warnings = ? WHERE group_id = ?', [n, groupId]);
-        await reply('✅ Max. Verwarnungen: **' + n + '**');
+        await reply('✅ Max. Verwarnungen: *' + n + '*');
         return true;
     }
     if (command === p + 'setwelcome') {
@@ -656,7 +656,7 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
             const id = r.user_id.split('@')[0];
             return '• ' + id + ' – ' + formatBanUntil(r) + (r.reason ? ' (' + r.reason + ')' : '');
         }).join('\n');
-        await reply('📋 **Gebannt (' + active.length + '):**\n' + list);
+        await reply('📋 *Gebannt (' + active.length + '):*\n' + list);
         return true;
     }
     if (command === p + 'kick') {
@@ -684,7 +684,7 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
             return true;
         }
         const count = await getWarningCount(groupId, mentions[0]);
-        await reply('⚠️ Verwarnungen: **' + count + '/' + settings.maxWarnings + '**', [mentions[0]]);
+        await reply('⚠️ Verwarnungen: *' + count + '/' + settings.maxWarnings + '*', [mentions[0]]);
         return true;
     }
     if (command === p + 'resetwarns') {
@@ -711,18 +711,18 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
         }
         await dbPool.query('INSERT IGNORE INTO bad_words (word) VALUES (?)', [word]);
         await reloadBadWordsCache();
-        await reply('✅ Schimpfwort **' + word + '** hinzugefügt.');
+        await reply('✅ Schimpfwort *' + word + '* hinzugefügt.');
         return true;
     }
     if (command === p + 'delword' && args[1]) {
         const word = args.slice(1).join(' ').toLowerCase().trim();
         await dbPool.query('DELETE FROM bad_words WHERE word = ?', [word]);
         await reloadBadWordsCache();
-        await reply('✅ Schimpfwort **' + word + '** entfernt.');
+        await reply('✅ Schimpfwort *' + word + '* entfernt.');
         return true;
     }
     if (command === p + 'help') {
-        await reply('🛠 **Admin-Befehle (Baileys v3)**\n\n• `' + p + 'bot on/off`\n• `' + p + 'settings` / `' + p + 'stats` / `' + p + 'info` / `' + p + 'ping`\n• `' + p + 'toggle <links|stickers|images|videos|audios|antispam|welcome>`\n• `' + p + 'maxwarns <1-20>`\n• `' + p + 'setwelcome` / `' + p + 'setleave`\n• `' + p + 'lock` / `' + p + 'unlock`\n• `' + p + 'mute` / `' + p + 'unmute` / `' + p + 'muted`\n• `' + p + 'ban @User [Dauer] [Grund]` / `' + p + 'unban` / `' + p + 'banned`\n• `' + p + 'kick`\n• `' + p + 'warns` / `' + p + 'resetwarns` / `' + p + 'clearwarns`\n• `' + p + 'addword` / `' + p + 'delword`');
+        await reply('🛠 *Admin-Befehle (Baileys v3)*\n\n• `' + p + 'bot on/off`\n• `' + p + 'settings` / `' + p + 'stats` / `' + p + 'info` / `' + p + 'ping`\n• `' + p + 'toggle <links|stickers|images|videos|audios|antispam|welcome>`\n• `' + p + 'maxwarns <1-20>`\n• `' + p + 'setwelcome` / `' + p + 'setleave`\n• `' + p + 'lock` / `' + p + 'unlock`\n• `' + p + 'mute` / `' + p + 'unmute` / `' + p + 'muted`\n• `' + p + 'ban @User [Dauer] [Grund]` / `' + p + 'unban` / `' + p + 'banned`\n• `' + p + 'kick`\n• `' + p + 'warns` / `' + p + 'resetwarns` / `' + p + 'clearwarns`\n• `' + p + 'addword` / `' + p + 'delword`');
         return true;
     }
     return false;
