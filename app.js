@@ -27,6 +27,7 @@ import * as profanity from './profanity.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PREFIX = process.env.COMMAND_PREFIX || '!';
 const AUTH_DIR = process.env.BAILEYS_AUTH_PATH || path.join(__dirname, 'auth_baileys');
+const SYSTEM_GROUP = 'SYSTEM';
 
 const CONFIG = {
     phoneNumber: process.env.PHONE_NUMBER,
@@ -184,7 +185,32 @@ async function initDatabase() {
     await ensureColumn('group_settings', 'welcome_active', 'TINYINT(1) DEFAULT 0');
     await ensureColumn('group_settings', 'welcome_msg', 'TEXT');
     await ensureColumn('group_settings', 'leave_msg', 'TEXT');
-    await dbPool.query('CREATE TABLE IF NOT EXISTS mod_logs (id INT AUTO_INCREMENT PRIMARY KEY, group_id VARCHAR(191) NOT NULL, user_id VARCHAR(191) NOT NULL, action VARCHAR(50) NOT NULL, reason TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX idx_group (group_id), INDEX idx_created (created_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+
+    // === erweiterte mod_logs Tabelle ===
+    await dbPool.query(
+        'CREATE TABLE IF NOT EXISTS mod_logs (' +
+        'id INT AUTO_INCREMENT PRIMARY KEY,' +
+        'group_id VARCHAR(191) NOT NULL,' +
+        'user_id VARCHAR(191) NOT NULL,' +
+        'actor_id VARCHAR(191) NULL,' +
+        'action VARCHAR(64) NOT NULL,' +
+        'reason TEXT,' +
+        'details TEXT,' +
+        'created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,' +
+        'INDEX idx_group (group_id),' +
+        'INDEX idx_action (action),' +
+        'INDEX idx_created (created_at),' +
+        'INDEX idx_user (user_id)' +
+        ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+    );
+    log('🔄 Prüfe mod_logs-Schema...');
+    await ensureColumn('mod_logs', 'actor_id', 'VARCHAR(191) NULL');
+    await ensureColumn('mod_logs', 'details', 'TEXT');
+    // ältere Installationen hatten action nur VARCHAR(50)
+    try {
+        await dbPool.query('ALTER TABLE mod_logs MODIFY COLUMN action VARCHAR(64) NOT NULL');
+    } catch (_) {}
+
     await dbPool.query('CREATE TABLE IF NOT EXISTS muted_users (group_id VARCHAR(191) NOT NULL, user_id VARCHAR(191) NOT NULL, muted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (group_id, user_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
     await dbPool.query(
         'CREATE TABLE IF NOT EXISTS banned_users (' +
@@ -278,8 +304,35 @@ function mapSettingsRow(r) {
     };
 }
 
-async function logAction(groupId, userId, action, reason) {
-    await dbPool.query('INSERT INTO mod_logs (group_id, user_id, action, reason) VALUES (?, ?, ?, ?)', [groupId, userId, action, reason]);
+/**
+ * Vollständiges Logging in mod_logs.
+ * @param {string} groupId  - Gruppen-JID oder 'SYSTEM'
+ * @param {string} userId   - Betroffener User (oder 'bot' / 'system')
+ * @param {string} action   - z.B. WARN, BAN, BOT_ON, TOGGLE, ...
+ * @param {string} [reason] - freier Text
+ * @param {string} [actorId]- Wer die Aktion ausgelöst hat (Admin/Owner/system)
+ * @param {string|object} [details] - Zusatzinfos (wird als JSON gespeichert wenn Objekt)
+ */
+async function logAction(groupId, userId, action, reason = null, actorId = null, details = null) {
+    try {
+        const detailsStr = details == null
+            ? null
+            : (typeof details === 'string' ? details : JSON.stringify(details));
+        await dbPool.query(
+            'INSERT INTO mod_logs (group_id, user_id, actor_id, action, reason, details) VALUES (?, ?, ?, ?, ?, ?)',
+            [
+                groupId || SYSTEM_GROUP,
+                userId || 'system',
+                actorId || null,
+                String(action).slice(0, 64),
+                reason || null,
+                detailsStr
+            ]
+        );
+    } catch (e) {
+        // Logging darf den Bot nie crashen
+        console.error('[logAction]', e.message || e);
+    }
 }
 
 function isSpamming(groupId, userId) {
@@ -413,16 +466,24 @@ async function sendText(groupId, text, mentions = []) {
 
 async function handleViolation(msg, meta, groupId, senderId, reason, maxWarnings, isAdmin) {
     try {
-        await safeDeleteMessage(groupId, msg.key);
+        const deleted = await safeDeleteMessage(groupId, msg.key);
         const currentWarns = await addWarning(groupId, senderId);
-        await logAction(groupId, senderId, 'WARN', reason);
+        const msgSnippet = (extractText(msg) || '[' + detectMsgType(msg) + ']').slice(0, 200);
+
+        await logAction(groupId, senderId, 'WARN', reason, 'system', {
+            warns: currentWarns,
+            maxWarnings,
+            deleted,
+            snippet: msgSnippet
+        });
+
         const number = normalizePhone(senderId) || senderId.split('@')[0];
 
         if (currentWarns >= maxWarnings) {
             if (isAdmin || isParticipantAdmin(meta, senderId)) {
                 await sendText(groupId, '⛔ @' + number + ' hat max. Verwarnungen erreicht, wird als *Admin* nicht gekickt.\n*Grund:* ' + reason, [senderId]);
                 await resetWarnings(groupId, senderId);
-                await logAction(groupId, senderId, 'WARN_MAX_ADMIN', reason);
+                await logAction(groupId, senderId, 'WARN_MAX_ADMIN', reason, 'system', { warns: currentWarns });
                 return;
             }
             await sendText(groupId, '⛔ @' + number + ' wurde automatisch gekickt.\n*Grund:* Maximale Verwarnungen erreicht.', [senderId]);
@@ -432,7 +493,7 @@ async function handleViolation(msg, meta, groupId, senderId, reason, maxWarnings
                 console.error('Kick fehlgeschlagen:', e.message || e);
             }
             await resetWarnings(groupId, senderId);
-            await logAction(groupId, senderId, 'KICK', 'Maximale Verwarnungen erreicht');
+            await logAction(groupId, senderId, 'KICK', 'Maximale Verwarnungen erreicht', 'system', { reason });
         } else {
             await sendText(
                 groupId,
@@ -442,6 +503,7 @@ async function handleViolation(msg, meta, groupId, senderId, reason, maxWarnings
         }
     } catch (err) {
         console.error('Moderationsfehler:', err);
+        await logAction(groupId, senderId || 'unknown', 'ERROR', 'handleViolation: ' + (err.message || err), 'system');
     }
 }
 
@@ -468,6 +530,7 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
                 [groupId, state]
             );
             log('⚙️ is_active=' + state + ' für ' + groupId);
+            await logAction(groupId, 'bot', state ? 'BOT_ON' : 'BOT_OFF', null, senderId);
             await reply(state ? '🟢 *Bot aktiviert!*' : '🔴 *Bot deaktiviert!*');
             return true;
         }
@@ -491,21 +554,45 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
         await reply('📊 *Gruppen-Statistik*\n• Verwarnte User: ' + warnRows[0].c + '\n• Summe Verwarnungen: ' + warnRows[0].total + '\n• Stummgeschaltet: ' + muteRows[0].c + '\n• Mod-Aktionen (24h): ' + logRows[0].c + '\n• Max. Warns: ' + settings.maxWarnings);
         return true;
     }
+    if (command === p + 'logs') {
+        const limit = Math.min(parseInt(args[1], 10) || 15, 30);
+        const [rows] = await dbPool.query(
+            'SELECT action, user_id, actor_id, reason, details, created_at FROM mod_logs WHERE group_id = ? ORDER BY id DESC LIMIT ?',
+            [groupId, limit]
+        );
+        if (rows.length === 0) {
+            await reply('📋 Keine Logs für diese Gruppe.');
+            return true;
+        }
+        const lines = rows.map(r => {
+            const ts = r.created_at ? new Date(r.created_at).toISOString().slice(5, 16).replace('T', ' ') : '?';
+            const who = (r.user_id || '').split('@')[0].slice(-8);
+            const by = r.actor_id ? ' by ' + r.actor_id.split('@')[0].slice(-6) : '';
+            const reasonShort = (r.reason || '').slice(0, 40);
+            return '• `' + ts + '` *' + r.action + '* ' + who + by + (reasonShort ? ' – ' + reasonShort : '');
+        });
+        await reply('📜 *Letzte ' + rows.length + ' Logs*\n' + lines.join('\n'));
+        return true;
+    }
     if (command === p + 'lock') {
         try {
             await sock.groupSettingUpdate(groupId, 'announcement');
+            await logAction(groupId, 'group', 'LOCK', 'Nur Admins dürfen schreiben', senderId);
             await reply('🔒 *Gruppe gesperrt.* Nur noch Admins können schreiben.');
         } catch (e) {
             await reply('❌ Lock fehlgeschlagen: ' + (e.message || e));
+            await logAction(groupId, 'group', 'LOCK_FAIL', e.message || String(e), senderId);
         }
         return true;
     }
     if (command === p + 'unlock') {
         try {
             await sock.groupSettingUpdate(groupId, 'not_announcement');
+            await logAction(groupId, 'group', 'UNLOCK', 'Alle dürfen schreiben', senderId);
             await reply('🔓 *Gruppe entsperrt.*');
         } catch (e) {
             await reply('❌ Unlock fehlgeschlagen: ' + (e.message || e));
+            await logAction(groupId, 'group', 'UNLOCK_FAIL', e.message || String(e), senderId);
         }
         return true;
     }
@@ -521,11 +608,11 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
                 return true;
             }
             await dbPool.query('INSERT IGNORE INTO muted_users (group_id, user_id) VALUES (?, ?)', [groupId, target]);
-            await logAction(groupId, target, 'MUTE', 'Manuell');
+            await logAction(groupId, target, 'MUTE', 'Manuell', senderId);
             await reply('🤫 User stummgeschaltet.', [target]);
         } else {
             await dbPool.query('DELETE FROM muted_users WHERE group_id = ? AND user_id = ?', [groupId, target]);
-            await logAction(groupId, target, 'UNMUTE', 'Manuell');
+            await logAction(groupId, target, 'UNMUTE', 'Manuell', senderId);
             await reply('🔊 User darf wieder schreiben.', [target]);
         }
         return true;
@@ -548,6 +635,7 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
             const camelKey = field.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
             const newVal = !settings[camelKey];
             await dbPool.query('UPDATE group_settings SET ' + field + ' = ? WHERE group_id = ?', [newVal ? 1 : 0, groupId]);
+            await logAction(groupId, 'settings', 'TOGGLE', option + ' → ' + (newVal ? 'ON' : 'OFF'), senderId, { option, newVal });
             await reply('✅ *' + option + '* ist jetzt: ' + (newVal ? 'AN ✅' : 'AUS ❌'));
         } else {
             await reply('⚠️ Optionen: links, stickers, images, videos, audios, antispam, welcome');
@@ -560,7 +648,9 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
             await reply('⚠️ Bitte Zahl 1–20 angeben.');
             return true;
         }
+        const old = settings.maxWarnings;
         await dbPool.query('UPDATE group_settings SET max_warnings = ? WHERE group_id = ?', [n, groupId]);
+        await logAction(groupId, 'settings', 'MAXWARNS', old + ' → ' + n, senderId, { old, new: n });
         await reply('✅ Max. Verwarnungen: *' + n + '*');
         return true;
     }
@@ -571,6 +661,7 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
             return true;
         }
         await dbPool.query('UPDATE group_settings SET welcome_msg = ?, welcome_active = 1 WHERE group_id = ?', [t, groupId]);
+        await logAction(groupId, 'settings', 'SET_WELCOME', t.slice(0, 100), senderId);
         await reply('✅ Willkommenstext gesetzt:\n' + t);
         return true;
     }
@@ -581,6 +672,7 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
             return true;
         }
         await dbPool.query('UPDATE group_settings SET leave_msg = ?, welcome_active = 1 WHERE group_id = ?', [t, groupId]);
+        await logAction(groupId, 'settings', 'SET_LEAVE', t.slice(0, 100), senderId);
         await reply('✅ Abschiedstext gesetzt:\n' + t);
         return true;
     }
@@ -618,7 +710,7 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
         const reason = reasonParts.join(' ').trim() || 'Manueller Ban';
         const untilSql = until ? until.toISOString().slice(0, 19).replace('T', ' ') : null;
         await banUser(groupId, target, untilSql, reason, senderId);
-        await logAction(groupId, target, 'BAN', reason + ' (' + label + ')');
+        await logAction(groupId, target, 'BAN', reason + ' (' + label + ')', senderId, { duration: label, until: untilSql });
         try {
             await sock.groupParticipantsUpdate(groupId, [target], 'remove');
         } catch (e) {
@@ -634,7 +726,7 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
         }
         const target = mentions[0];
         await unbanUser(groupId, target);
-        await logAction(groupId, target, 'UNBAN', 'Manuell');
+        await logAction(groupId, target, 'UNBAN', 'Manuell', senderId);
         await reply('✅ Ban aufgehoben.', [target]);
         return true;
     }
@@ -671,10 +763,11 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
         }
         try {
             await sock.groupParticipantsUpdate(groupId, [target], 'remove');
-            await logAction(groupId, target, 'KICK', 'Manueller Kick');
+            await logAction(groupId, target, 'KICK', 'Manueller Kick', senderId);
             await reply('👢 User entfernt.', [target]);
         } catch (e) {
             await reply('❌ Kick fehlgeschlagen: ' + (e.message || e));
+            await logAction(groupId, target, 'KICK_FAIL', e.message || String(e), senderId);
         }
         return true;
     }
@@ -693,13 +786,13 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
             return true;
         }
         await resetWarnings(groupId, mentions[0]);
-        await logAction(groupId, mentions[0], 'RESET_WARNS', 'Manuell');
+        await logAction(groupId, mentions[0], 'RESET_WARNS', 'Manuell', senderId);
         await reply('✅ Verwarnungen zurückgesetzt.', [mentions[0]]);
         return true;
     }
     if (command === p + 'clearwarns') {
         await dbPool.query('DELETE FROM warnings WHERE group_id = ?', [groupId]);
-        await logAction(groupId, senderId, 'CLEAR_WARNS', 'Alle gelöscht');
+        await logAction(groupId, senderId, 'CLEAR_WARNS', 'Alle gelöscht', senderId);
         await reply('✅ Alle Verwarnungen dieser Gruppe gelöscht.');
         return true;
     }
@@ -711,6 +804,7 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
         }
         await dbPool.query('INSERT IGNORE INTO bad_words (word) VALUES (?)', [word]);
         await reloadBadWordsCache();
+        await logAction(SYSTEM_GROUP, 'bad_words', 'ADD_WORD', word, senderId);
         await reply('✅ Schimpfwort *' + word + '* hinzugefügt.');
         return true;
     }
@@ -718,11 +812,12 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
         const word = args.slice(1).join(' ').toLowerCase().trim();
         await dbPool.query('DELETE FROM bad_words WHERE word = ?', [word]);
         await reloadBadWordsCache();
+        await logAction(SYSTEM_GROUP, 'bad_words', 'DEL_WORD', word, senderId);
         await reply('✅ Schimpfwort *' + word + '* entfernt.');
         return true;
     }
     if (command === p + 'help') {
-        await reply('🛠 *Admin-Befehle (Baileys v3)*\n\n• `' + p + 'bot on/off`\n• `' + p + 'settings` / `' + p + 'stats` / `' + p + 'info` / `' + p + 'ping`\n• `' + p + 'toggle <links|stickers|images|videos|audios|antispam|welcome>`\n• `' + p + 'maxwarns <1-20>`\n• `' + p + 'setwelcome` / `' + p + 'setleave`\n• `' + p + 'lock` / `' + p + 'unlock`\n• `' + p + 'mute` / `' + p + 'unmute` / `' + p + 'muted`\n• `' + p + 'ban @User [Dauer] [Grund]` / `' + p + 'unban` / `' + p + 'banned`\n• `' + p + 'kick`\n• `' + p + 'warns` / `' + p + 'resetwarns` / `' + p + 'clearwarns`\n• `' + p + 'addword` / `' + p + 'delword`');
+        await reply('🛠 *Admin-Befehle (Baileys v3)*\n\n• `' + p + 'bot on/off`\n• `' + p + 'settings` / `' + p + 'stats` / `' + p + 'info` / `' + p + 'ping` / `' + p + 'logs [n]`\n• `' + p + 'toggle <links|stickers|images|videos|audios|antispam|welcome>`\n• `' + p + 'maxwarns <1-20>`\n• `' + p + 'setwelcome` / `' + p + 'setleave`\n• `' + p + 'lock` / `' + p + 'unlock`\n• `' + p + 'mute` / `' + p + 'unmute` / `' + p + 'muted`\n• `' + p + 'ban @User [Dauer] [Grund]` / `' + p + 'unban` / `' + p + 'banned`\n• `' + p + 'kick`\n• `' + p + 'warns` / `' + p + 'resetwarns` / `' + p + 'clearwarns`\n• `' + p + 'addword` / `' + p + 'delword`');
         return true;
     }
     return false;
@@ -740,29 +835,39 @@ async function onGroupParticipantsUpdate(update) {
                     log('🚫 Gebannter User rejoined → Kick: ' + userId);
                     try {
                         await sock.groupParticipantsUpdate(groupId, [userId], 'remove');
-                        await logAction(groupId, userId, 'BAN_REKICK', ban.reason || 'Auto-Kick (Ban)');
+                        await logAction(groupId, userId, 'BAN_REKICK', ban.reason || 'Auto-Kick (Ban)', 'system', {
+                            until: formatBanUntil(ban)
+                        });
                         const num = normalizePhone(userId) || userId.split('@')[0];
                         await sendText(groupId, '🚫 @' + num + ' ist gebannt und wurde erneut entfernt.\nBis: ' + formatBanUntil(ban), [userId]);
                     } catch (e) {
                         console.error('Ban-Rekick fehlgeschlagen:', e.message || e);
+                        await logAction(groupId, userId, 'BAN_REKICK_FAIL', e.message || String(e), 'system');
                     }
                     continue;
                 }
+                await logAction(groupId, userId, 'JOIN', null, 'system');
                 const settings = await getGroupSettings(groupId);
                 if (settings.isActive && settings.welcomeActive) {
                     const num = normalizePhone(userId) || userId.split('@')[0];
                     const t = settings.welcomeMsg.replace(/@user/gi, '@' + num);
                     await sendText(groupId, t, [userId]);
+                    await logAction(groupId, userId, 'WELCOME_SENT', null, 'system');
                 }
             }
         } else if (update.action === 'remove') {
+            for (const userId of update.participants || []) {
+                await logAction(groupId, userId, 'LEAVE', null, 'system');
+            }
             const settings = await getGroupSettings(groupId);
             if (settings.isActive && settings.welcomeActive) {
                 await sendText(groupId, settings.leaveMsg);
+                await logAction(groupId, 'group', 'LEAVE_MSG_SENT', null, 'system');
             }
         }
     } catch (e) {
         console.error('group participants update:', e.message || e);
+        await logAction(update?.id || SYSTEM_GROUP, 'system', 'ERROR', 'group-participants: ' + (e.message || e), 'system');
     }
 }
 
@@ -788,6 +893,9 @@ async function onIncomingMessage(msg) {
             if (handled) {
                 stats.commands++;
                 log('✅ Admin-Befehl ausgeführt');
+                // Command-Logging (ohne sensitive Texte)
+                const cmdName = text.trim().split(/\s+/)[0].toLowerCase();
+                await logAction(groupId, senderId, 'COMMAND', cmdName, senderId);
                 return;
             }
         }
@@ -797,6 +905,7 @@ async function onIncomingMessage(msg) {
         }
         if (await isMuted(groupId, senderId)) {
             await safeDeleteMessage(groupId, msg.key);
+            await logAction(groupId, senderId, 'MUTE_DELETE', 'Nachricht von gemutetem User gelöscht', 'system');
             return;
         }
         let violationReason = null;
@@ -826,6 +935,7 @@ async function onIncomingMessage(msg) {
         }
     } catch (error) {
         console.error('⚠️ Handler-Fehler:', error?.stack || error);
+        await logAction(msg?.key?.remoteJid || SYSTEM_GROUP, 'system', 'ERROR', 'onIncomingMessage: ' + (error?.message || error), 'system');
     }
 }
 
@@ -871,6 +981,7 @@ async function startSocket() {
         if (connection === 'open') {
             botStartTime = Date.now();
             log('🤖 Moderations-Bot v3.1.0 ist einsatzbereit!');
+            await logAction(SYSTEM_GROUP, 'bot', 'CONNECTED', 'WhatsApp-Verbindung hergestellt', 'system');
         }
         if (connection === 'close') {
             const statusCode = (lastDisconnect?.error instanceof Boom)
@@ -878,10 +989,15 @@ async function startSocket() {
                 : lastDisconnect?.error?.output?.statusCode;
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
             log('🔌 Verbindung geschlossen. status=' + statusCode + ' reconnect=' + shouldReconnect);
+            await logAction(SYSTEM_GROUP, 'bot', 'DISCONNECTED', 'status=' + statusCode + ' reconnect=' + shouldReconnect, 'system', {
+                statusCode,
+                shouldReconnect
+            });
             if (shouldReconnect) {
                 setTimeout(() => startSocket().catch(e => console.error(e)), 3000);
             } else {
                 log('❌ Ausgeloggt – Auth-Ordner löschen und neu koppeln: ' + AUTH_DIR);
+                await logAction(SYSTEM_GROUP, 'bot', 'LOGGED_OUT', 'Auth neu koppeln erforderlich', 'system');
             }
         }
     });
@@ -900,10 +1016,14 @@ async function startBot() {
     try {
         if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
         await initDatabase();
+        await logAction(SYSTEM_GROUP, 'bot', 'BOT_START', 'Bot startet', 'system');
         await syncAndLoadBadWords();
         await startSocket();
     } catch (err) {
         console.error('❌ Start fehlgeschlagen:', err);
+        try {
+            await logAction(SYSTEM_GROUP, 'bot', 'BOT_START_FAIL', err.message || String(err), 'system');
+        } catch (_) {}
         process.exit(1);
     }
 }

@@ -16,6 +16,7 @@ Kein Puppeteer/Chrome – reine WebSocket-Verbindung zu WhatsApp.
 | **Mute** | Stummschalten (Nachrichten werden gelöscht) |
 | **Ban** | Temporär / permanent – Auto-Kick bei Wiedereintritt |
 | **Gruppe** | Lock/Unlock, Kick, Stats, Willkommen/Abschied |
+| **Logging** | Vollständiges MySQL-Logging aller Moderations- und Admin-Aktionen |
 | **Admin** | `!help` und viele weitere Befehle |
 
 ---
@@ -107,6 +108,7 @@ Nur **Gruppen-Admins** und **Bot-Owner** (`PHONE_NUMBER` / `BOT_OWNERS`).
 | `!bot` | Aktuellen Status + Group-ID anzeigen |
 | `!settings` | Alle Gruppeneinstellungen |
 | `!info` / `!stats` / `!ping` | Info, Statistik, Latenz |
+| `!logs [n]` | Letzte n Logs dieser Gruppe anzeigen (Default 15, max 30) |
 
 ### Filter umschalten
 ```text
@@ -154,7 +156,40 @@ Beim Start werden Tabellen automatisch angelegt:
 
 - `group_settings` – u. a. **`is_active`** pro Gruppe
 - `warnings`, `muted_users`, `banned_users`
-- `bad_words`, `mod_logs`
+- `bad_words`
+- **`mod_logs`** – vollständiges Audit-Log (siehe unten)
+
+### mod_logs (vollständiges Logging)
+
+| Spalte | Beschreibung |
+|--------|--------------|
+| `group_id` | Gruppen-JID oder `SYSTEM` (Bot-weite Events) |
+| `user_id` | Betroffener User / `bot` / `settings` / … |
+| `actor_id` | Wer die Aktion ausgelöst hat (Admin oder `system`) |
+| `action` | z. B. `WARN`, `BAN`, `BOT_ON`, `TOGGLE`, `JOIN`, `CONNECTED`, … |
+| `reason` | Freier Text |
+| `details` | JSON mit Zusatzinfos (optional) |
+| `created_at` | Zeitstempel |
+
+**Geloggte Aktionen (Auszug):**
+
+- Moderations: `WARN`, `WARN_MAX_ADMIN`, `KICK`, `MUTE`, `UNMUTE`, `BAN`, `UNBAN`, `BAN_REKICK`, `MUTE_DELETE`
+- Admin: `BOT_ON`/`BOT_OFF`, `TOGGLE`, `MAXWARNS`, `SET_WELCOME`/`SET_LEAVE`, `LOCK`/`UNLOCK`, `ADD_WORD`/`DEL_WORD`, `COMMAND`
+- Gruppe: `JOIN`, `LEAVE`, `WELCOME_SENT`, `LEAVE_MSG_SENT`
+- System: `BOT_START`, `CONNECTED`, `DISCONNECTED`, `LOGGED_OUT`, `ERROR`
+
+Beispiel-Abfragen:
+
+```sql
+-- Letzte 50 Aktionen einer Gruppe
+SELECT * FROM mod_logs WHERE group_id = '120363...@g.us' ORDER BY id DESC LIMIT 50;
+
+-- Alle Bans der letzten 7 Tage
+SELECT * FROM mod_logs WHERE action = 'BAN' AND created_at > DATE_SUB(NOW(), INTERVAL 7 DAY);
+
+-- System-Events
+SELECT * FROM mod_logs WHERE group_id = 'SYSTEM' ORDER BY id DESC LIMIT 20;
+```
 
 ### Wichtig: `is_active` nach Reboot
 
@@ -190,7 +225,7 @@ Der Bot speichert `is_active` per **UPSERT** und überschreibt bestehende Werte 
 ## Projektstruktur
 
 ```text
-app.js           # Bot (Baileys + Moderation)
+app.js           # Bot (Baileys + Moderation + Logging)
 profanity.js     # Schimpfwort-Erkennung
 package.json     # Dependencies (ESM)
 .env             # Geheimnisse (nicht committen)
@@ -217,6 +252,7 @@ auth_baileys/    # WhatsApp-Session (nicht committen)
 - `.env` und `auth_baileys/` **nie** ins Git committen
 - Bot-Nummer und DB-Zugangsdaten geheim halten
 - Nur vertrauenswürdige Admins in der Gruppe
+- Logs enthalten ggf. User-IDs und kurze Nachrichten-Snippets – DB-Zugriff einschränken
 
 ---
 
