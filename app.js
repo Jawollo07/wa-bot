@@ -842,8 +842,9 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
             '• `' + p + 'warns` / `' + p + 'resetwarns` / `' + p + 'clearwarns`\n' +
             '• `' + p + 'addword` / `' + p + 'delword`\n\n' +
             '🤖 *KI (Ollama)* – für alle Nutzer:\n' +
-            '• `' + p + 'ki <Frage>` – Ollama fragen\n' +
+            '• `' + p + 'ki <Frage>` – Ollama fragen (kennt Mitglieder)\n' +
             '• `' + p + 'kistatus` – Status & Modell\n' +
+            '• `' + p + 'kimembers` – bekannte Mitgliedernamen\n' +
             '• `' + p + 'resetki` – Memory dieses Chats löschen'
         );
         return true;
@@ -938,11 +939,17 @@ async function onIncomingMessage(msg) {
                 lower === p + 'ki' ||
                 lower.startsWith(p + 'ki ') ||
                 lower === p + 'kistatus' ||
-                lower === p + 'resetki';
+                lower === p + 'resetki' ||
+                lower === p + 'kimembers';
 
             if (isKiCmd) {
-                // !kistatus immer erlauben; !ki / !resetki nur wenn Gruppe aktiv
-                const needsActive = !(lower === p + 'kistatus' || (lower.startsWith(p + 'ki ') && text.trim().split(/\s+/)[1]?.toLowerCase() === 'status'));
+                // !kistatus / !kimembers immer erlauben; !ki / !resetki nur wenn Gruppe aktiv
+                const sub = text.trim().split(/\s+/)[1]?.toLowerCase();
+                const needsActive = !(
+                    lower === p + 'kistatus' ||
+                    lower === p + 'kimembers' ||
+                    (lower.startsWith(p + 'ki ') && (sub === 'status' || sub === 'members'))
+                );
                 if (needsActive && !settings.isActive) {
                     log('🔴 KI-Befehl ignoriert – Bot inaktiv (group=' + groupId + ')');
                     return;

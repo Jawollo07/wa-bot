@@ -2,6 +2,11 @@
  * Ollama KI-Modul für wa-bot
  * Trigger: !ki <Frage>
  * Basiert auf whatsapp-ollama-human-bot (Jawollo07)
+ *
+ * Mitglieder-Unterscheidung:
+ * - Jede Nachricht wird als „Name: Text“ gespeichert
+ * - Pro Gruppe wird eine Namens-Registry (JID → Anzeigename) geführt
+ * - Die KI bekommt die bekannten Mitglieder im System-Kontext
  */
 import { Ollama } from 'ollama';
 import fs from 'fs';
@@ -16,7 +21,13 @@ const KI_CONFIG = {
   systemPrompt: (process.env.SYSTEM_PROMPT || `Du bist ein hilfreicher Assistent in einer WhatsApp-Gruppe.
 Du antwortest klar, knapp und auf Deutsch.
 Lange Erklärungen nur wenn nötig.
-Du kannst Humor und Emojis nutzen, bleibst aber sachlich wenn die Frage ernst ist.`).replace(/^"|"$/g, ''),
+Du kannst Humor und Emojis nutzen, bleibst aber sachlich wenn die Frage ernst ist.
+
+WICHTIG – Mitglieder:
+- Jede User-Nachricht beginnt mit dem Namen des Absenders, z. B. „Jan: …“ oder „Tom: …“.
+- Verschiedene Namen = verschiedene Personen. Verwechsle sie nicht.
+- Wenn jemand über eine andere Person spricht oder du jemanden ansprichst, nutze den richtigen Namen.
+- Beziehe dich im Verlauf auf den jeweiligen Sprecher („du“ = die Person, die gerade gefragt hat).`).replace(/^"|"$/g, ''),
   maxTokens: parseInt(process.env.MAX_TOKENS || '300', 10),
   memoryLimit: parseInt(process.env.MEMORY_LIMIT || '12', 10),
   persistMemory: (process.env.PERSIST_MEMORY || 'true').toLowerCase() === 'true',
@@ -27,6 +38,8 @@ Du kannst Humor und Emojis nutzen, bleibst aber sachlich wenn die Frage ernst is
 
 const ollama = new Ollama({ host: KI_CONFIG.host });
 const conversations = new Map();
+/** @type {Map<string, Map<string, { name: string, phone: string, lastSeen: number }>>} */
+const membersByGroup = new Map();
 const lastReplyAt = new Map();
 const processing = new Set();
 
@@ -38,6 +51,11 @@ function ensureMemoryDir() {
 
 function safeChatId(jid) {
   return String(jid || '').replace(/[^a-zA-Z0-9@._-]/g, '_');
+}
+
+function normalizePhone(jidOrNum) {
+  if (!jidOrNum) return '';
+  return String(jidOrNum).split('@')[0].split(':')[0].replace(/\D/g, '');
 }
 
 function loadMemory(chatId) {
@@ -63,11 +81,139 @@ function saveMemory(chatId, history) {
   }
 }
 
+function membersFile(chatId) {
+  return path.join(KI_CONFIG.memoryFolder, `members_${safeChatId(chatId)}.json`);
+}
+
+function loadMembers(chatId) {
+  if (membersByGroup.has(chatId)) return membersByGroup.get(chatId);
+  const map = new Map();
+  if (KI_CONFIG.persistMemory) {
+    try {
+      const file = membersFile(chatId);
+      if (fs.existsSync(file)) {
+        const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+        for (const [key, val] of Object.entries(data)) {
+          if (val && val.name) {
+            map.set(key, {
+              name: String(val.name),
+              phone: String(val.phone || key),
+              lastSeen: Number(val.lastSeen) || 0
+            });
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+  membersByGroup.set(chatId, map);
+  return map;
+}
+
+function saveMembers(chatId) {
+  if (!KI_CONFIG.persistMemory) return;
+  const map = membersByGroup.get(chatId);
+  if (!map) return;
+  const obj = {};
+  for (const [key, val] of map.entries()) {
+    obj[key] = val;
+  }
+  try {
+    fs.writeFileSync(membersFile(chatId), JSON.stringify(obj, null, 0));
+  } catch (err) {
+    console.error('[KI] Mitglieder speichern fehlgeschlagen:', err.message);
+  }
+}
+
+/**
+ * Prüft, ob ein Name brauchbar ist (nicht leer, nicht nur Ziffern, nicht generisch).
+ */
+function isUsefulName(name) {
+  if (!name || typeof name !== 'string') return false;
+  const n = name.trim();
+  if (n.length < 2) return false;
+  if (/^\d+$/.test(n)) return false;
+  const lower = n.toLowerCase();
+  if (['user', 'jemand', 'member', 'mitglied', 'unknown', 'null', 'undefined'].includes(lower)) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Stabile Anzeigename-Auflösung pro Absender.
+ * Priorität: bekannter Registry-Name → pushName → Mitglied_XXXX (letzte 4 Ziffern)
+ */
+export function resolveMemberName(chatId, senderId, pushName = '') {
+  const phone = normalizePhone(senderId) || String(senderId || 'unknown');
+  const map = loadMembers(chatId);
+  const existing = map.get(phone);
+  const incoming = (pushName || '').trim();
+
+  let name;
+  if (isUsefulName(incoming)) {
+    name = incoming;
+  } else if (existing?.name) {
+    name = existing.name;
+  } else {
+    const tail = phone.slice(-4) || '????';
+    name = `Mitglied_${tail}`;
+  }
+
+  // Registry aktualisieren (Name kann sich verbessern, z. B. erst Mitglied_1234 → Jan)
+  const shouldUpdate =
+    !existing ||
+    (isUsefulName(incoming) && existing.name !== incoming) ||
+    existing.name.startsWith('Mitglied_') && isUsefulName(incoming);
+
+  if (shouldUpdate || !existing) {
+    map.set(phone, {
+      name,
+      phone,
+      lastSeen: Date.now()
+    });
+    saveMembers(chatId);
+  } else if (existing) {
+    existing.lastSeen = Date.now();
+  }
+
+  return name;
+}
+
+/**
+ * Kurze Mitgliederliste für den System-Kontext.
+ */
+function formatMemberRoster(chatId) {
+  const map = loadMembers(chatId);
+  if (!map.size) return '';
+  const entries = [...map.values()]
+    .sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0))
+    .slice(0, 30);
+  const lines = entries.map((m) => `- ${m.name}`);
+  return (
+    '\n\nBekannte Gruppenmitglieder (Namen der Absender):\n' +
+    lines.join('\n') +
+    '\nNutze diese Namen, um Personen zu unterscheiden und korrekt anzusprechen.'
+  );
+}
+
 export function clearKiMemory(chatId) {
   conversations.delete(chatId);
   if (KI_CONFIG.persistMemory) {
     const file = path.join(KI_CONFIG.memoryFolder, `${safeChatId(chatId)}.json`);
     try {
+      if (fs.existsSync(file)) fs.unlinkSync(file);
+    } catch {}
+  }
+  // Mitglieder-Registry bewusst behalten – nur Chatverlauf löschen
+}
+
+export function clearKiMembers(chatId) {
+  membersByGroup.delete(chatId);
+  if (KI_CONFIG.persistMemory) {
+    try {
+      const file = membersFile(chatId);
       if (fs.existsSync(file)) fs.unlinkSync(file);
     } catch {}
   }
@@ -77,6 +223,7 @@ export function clearAllKiMemory() {
   conversations.clear();
   if (KI_CONFIG.persistMemory && fs.existsSync(KI_CONFIG.memoryFolder)) {
     for (const f of fs.readdirSync(KI_CONFIG.memoryFolder)) {
+      if (f.startsWith('members_')) continue; // Mitglieder behalten
       try {
         fs.unlinkSync(path.join(KI_CONFIG.memoryFolder, f));
       } catch {}
@@ -91,16 +238,22 @@ function getHistory(chatId) {
   return conversations.get(chatId);
 }
 
+function buildSystemContent(chatId) {
+  return KI_CONFIG.systemPrompt + formatMemberRoster(chatId);
+}
+
 async function askOllama(chatId, userMessage, senderName = 'User') {
   let history = getHistory(chatId);
+  const systemContent = buildSystemContent(chatId);
 
+  // System-Prompt + aktuelle Mitgliederliste immer aktuell halten
   if (history.length === 0 || history[0].role !== 'system') {
-    history = [
-      { role: 'system', content: KI_CONFIG.systemPrompt },
-      ...history.filter((m) => m.role !== 'system')
-    ];
+    history = [{ role: 'system', content: systemContent }, ...history.filter((m) => m.role !== 'system')];
+  } else {
+    history[0] = { role: 'system', content: systemContent };
   }
 
+  // Klare Zuordnung: „Jan: Frage …“
   history.push({ role: 'user', content: `${senderName}: ${userMessage}` });
 
   if (history.length > KI_CONFIG.memoryLimit + 1) {
@@ -178,7 +331,7 @@ export async function checkOllama() {
 }
 
 /**
- * Verarbeitet !ki / !resetki / !kistatus
+ * Verarbeitet !ki / !resetki / !kistatus / !kimembers
  * @returns {Promise<boolean>} true wenn Command gehandelt wurde
  */
 export async function handleKiCommand(sock, msg, groupId, senderId, text, pushName) {
@@ -193,9 +346,13 @@ export async function handleKiCommand(sock, msg, groupId, senderId, text, pushNa
   const cmd = args[0].toLowerCase();
   const prefix = process.env.COMMAND_PREFIX || '!';
 
+  // Anzeigename stabil auflösen (lernt Namen pro Mitglied)
+  const memberName = resolveMemberName(groupId, senderId, pushName);
+
   // !kistatus / !ki status
   if (cmd === prefix + 'kistatus' || (cmd === prefix + 'ki' && args[1]?.toLowerCase() === 'status')) {
     const info = await checkOllama();
+    const memberCount = loadMembers(groupId).size;
     const lines = [
       '🤖 *KI-Status*',
       `• Aktiv: ${KI_CONFIG.enabled ? '✅' : '❌'}`,
@@ -203,17 +360,38 @@ export async function handleKiCommand(sock, msg, groupId, senderId, text, pushNa
       `• Host: \`${info.host}\``,
       `• Modell: \`${info.model}\`${info.hasModel ? '' : ' ⚠️ nicht gefunden'}`,
       `• Memory-Chats: ${conversations.size}`,
+      `• Bekannte Mitglieder (diese Gruppe): ${memberCount}`,
+      `• Dein Name für die KI: *${memberName}*`,
       info.models.length ? `• Verfügbar: ${info.models.slice(0, 8).join(', ')}` : ''
     ].filter(Boolean);
     await sock.sendMessage(groupId, { text: lines.join('\n') }, { quoted: msg });
     return true;
   }
 
-  // !resetki – Memory dieses Chats löschen
+  // !kimembers – bekannte Namen anzeigen
+  if (cmd === prefix + 'kimembers' || (cmd === prefix + 'ki' && args[1]?.toLowerCase() === 'members')) {
+    const map = loadMembers(groupId);
+    if (!map.size) {
+      await sock.sendMessage(groupId, {
+        text: '👥 Noch keine Mitglieder bekannt. Sobald jemand `!ki` nutzt, lernt die KI den Namen (WhatsApp-Anzeigename).'
+      }, { quoted: msg });
+      return true;
+    }
+    const list = [...map.values()]
+      .sort((a, b) => a.name.localeCompare(b.name, 'de'))
+      .map((m) => `• ${m.name}`)
+      .join('\n');
+    await sock.sendMessage(groupId, {
+      text: `👥 *Bekannte Mitglieder für die KI* (${map.size})\n${list}`
+    }, { quoted: msg });
+    return true;
+  }
+
+  // !resetki – Memory dieses Chats löschen (Mitglieder bleiben)
   if (cmd === prefix + 'resetki' || (cmd === prefix + 'ki' && args[1]?.toLowerCase() === 'reset')) {
     clearKiMemory(groupId);
     await sock.sendMessage(groupId, {
-      text: '🧠 KI-Memory für diesen Chat gelöscht.'
+      text: '🧠 KI-Memory für diesen Chat gelöscht. (Mitgliedernamen bleiben erhalten)'
     }, { quoted: msg });
     return true;
   }
@@ -228,6 +406,7 @@ export async function handleKiCommand(sock, msg, groupId, senderId, text, pushNa
         '🤖 *KI-Befehle*\n' +
         `• \`${prefix}ki <Frage>\` – Ollama fragen\n` +
         `• \`${prefix}kistatus\` – Status & Modell\n` +
+        `• \`${prefix}kimembers\` – bekannte Mitgliedernamen\n` +
         `• \`${prefix}resetki\` – Memory dieses Chats löschen`
     }, { quoted: msg });
     return true;
@@ -253,7 +432,7 @@ export async function handleKiCommand(sock, msg, groupId, senderId, text, pushNa
   try {
     await sock.sendPresenceUpdate('composing', groupId);
 
-    const reply = await askOllama(groupId, prompt, pushName || 'User');
+    const reply = await askOllama(groupId, prompt, memberName);
 
     if (!reply) {
       await sock.sendMessage(groupId, {
