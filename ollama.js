@@ -28,7 +28,6 @@ WICHTIG – Mitglieder:
 - Verschiedene Namen = verschiedene Personen. Verwechsle sie nicht.
 - Wenn jemand über eine andere Person spricht oder du jemanden ansprichst, nutze den richtigen Namen.
 - Beziehe dich im Verlauf auf den jeweiligen Sprecher („du“ = die Person, die gerade gefragt hat).`).replace(/^"|"$/g, ''),
-  maxTokens: parseInt(process.env.MAX_TOKENS || '300', 10),
   memoryLimit: parseInt(process.env.MEMORY_LIMIT || '12', 10),
   persistMemory: (process.env.PERSIST_MEMORY || 'true').toLowerCase() === 'true',
   rateLimitMs: parseInt(process.env.KI_RATE_LIMIT_MS || '3000', 10),
