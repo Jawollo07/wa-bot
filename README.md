@@ -18,6 +18,7 @@ Kein Puppeteer/Chrome – reine WebSocket-Verbindung zu WhatsApp.
 | **Gruppe** | Lock/Unlock, Kick, Stats, Willkommen/Abschied |
 | **Logging** | Vollständiges MySQL-Logging aller Moderations- und Admin-Aktionen |
 | **Admin** | `!help` und viele weitere Befehle |
+| **KI (Ollama)** | `!ki` mit **qwen3.5:9b**, Memory, Mitglieder-Namen (modular in `ollama.js`) |
 
 ---
 
@@ -26,6 +27,7 @@ Kein Puppeteer/Chrome – reine WebSocket-Verbindung zu WhatsApp.
 - **Node.js** ≥ 18 (empfohlen: 20+)
 - **MySQL** 5.7+ / 8 / MariaDB (**persistenter** Speicher!)
 - WhatsApp-Konto (Handy mit Internet)
+- **Ollama** (optional, für `!ki`) – [ollama.com](https://ollama.com)
 
 ---
 
@@ -56,35 +58,42 @@ node app.js
 
 ---
 
-## Umgebungsvariablen (`.env`)
+## Konfiguration
+
+### `.env` – nur Bootstrap (Pflicht: MySQL)
 
 | Variable | Pflicht | Beschreibung |
 |----------|---------|--------------|
-| `PHONE_NUMBER` | empfohlen | Nummer ohne `+`/Leerzeichen (Pairing-Code), z. B. `4915123456789` |
-| `BOT_OWNERS` | nein | Zusätzliche Owner-Nummern, kommagetrennt |
 | `DB_HOST` | ja | MySQL-Host |
 | `DB_USER` | ja | MySQL-User |
 | `DB_PASSWORD` | ja | MySQL-Passwort |
 | `DB_DATABASE` | ja | Datenbankname |
 | `DB_PORT` | nein | Default `3306` |
-| `COMMAND_PREFIX` | nein | Default `!` |
-| `SPAM_MAX_MESSAGES` | nein | Default `5` |
-| `SPAM_TIMEFRAME_MS` | nein | Default `5000` |
-| `BAILEYS_AUTH_PATH` | nein | Auth-Ordner (Default `./auth_baileys`) |
-| `BAILEYS_LOG_LEVEL` | nein | z. B. `silent`, `info`, `debug` |
-
-Beispiel:
+| `PHONE_NUMBER` | optional | Pairing (sonst `bot_config.phone_number`) |
+| `BOT_OWNERS` | optional | Owner (sonst `bot_config.bot_owners`) |
 
 ```env
-PHONE_NUMBER=4915123456789
-BOT_OWNERS=4915123456789
 DB_HOST=127.0.0.1
 DB_USER=wa_bot
 DB_PASSWORD=geheim
 DB_DATABASE=wa_bot
 DB_PORT=3306
-COMMAND_PREFIX=!
+# PHONE_NUMBER=4915123456789
+# BOT_OWNERS=4915123456789
 ```
+
+### MySQL-Tabelle `bot_config`
+
+Alle Laufzeit-Einstellungen (Ollama, Prefix, Spam, …) liegen in **`bot_config`** (Key/Value).  
+Beim ersten Start werden Defaults geschrieben; vorhandene `.env`-Werte werden einmalig migriert.
+
+| Befehl (Owner) | Beschreibung |
+|----------------|--------------|
+| `!config` | Alle Keys anzeigen |
+| `!setconfig <key> <wert>` | z. B. `!setconfig ollama_model qwen3.5:9b` |
+| `!reloadconfig` | Neu aus DB laden + KI anwenden |
+
+Wichtige Keys: `ollama_host`, `ollama_model`, `ki_enabled`, `max_tokens`, `memory_limit`, `ki_temperature`, `ki_timeout_ms`, `command_prefix`, `spam_max_messages`, `system_prompt`, `phone_number`, `bot_owners`, …
 
 ---
 
@@ -147,6 +156,35 @@ Gebannte Nutzer werden bei **jedem Wiedereintritt** automatisch wieder gekickt.
 | `!setleave …` | Abschiedstext |
 | `!addword` / `!delword` | Schimpfwort hinzufügen / entfernen |
 | `!help` | Hilfe |
+
+### KI (Ollama) – für alle Nutzer
+
+**Standardmodell: `qwen3.5:9b`** (gutes Deutsch, starke Anweisungsbefolgung, passt auf ~8–12 GB RAM).
+
+```bash
+ollama pull qwen3.5:9b
+# Ollama muss laufen: ollama serve
+```
+
+Die Gruppe muss mit `!bot on` aktiv sein (außer `!kistatus` / `!kimembers`).
+
+| Befehl | Beschreibung |
+|--------|--------------|
+| `!ki <Frage>` | Ollama fragen (Conversation-Memory pro Gruppe) |
+| Antwort auf Nachricht + `!ki …` | Zitierte Nachricht als Kontext |
+| `!kistatus` | Host, Modell, Stats, Timeout, Mitglieder |
+| `!kimembers` | Gelernte Mitgliedernamen |
+| `!resetki` | Chat-Memory löschen (Namen bleiben) |
+| `!ki resetmembers` | Namens-Registry neu lernen |
+| `!toggle ki` | KI pro Gruppe an/aus (Admin) |
+
+**Mitglieder-Unterscheidung:** Nachrichten als `Jan: …`, `Tom: …`.  
+Unbekannte: `Mitglied_1234` → Update bei echtem Anzeigenamen.  
+Registry: `ki_memory/members_*.json`.
+
+Weitere Features: Request-Timeout (`KI_TIMEOUT_MS`), Deduplizierung, Rate-Limit, Stats in `!kistatus`.
+
+Modul: `ollama.js` – optimiert für **Qwen 3.5** (Temperature, Kontext, Thinking-Tag-Filter).
 
 ---
 
@@ -225,11 +263,13 @@ Der Bot speichert `is_active` per **UPSERT** und überschreibt bestehende Werte 
 ## Projektstruktur
 
 ```text
-app.js           # Bot (Baileys + Moderation + Logging)
+app.js           # Bot (Baileys + Moderation + Logging + KI-Anbindung)
+ollama.js        # Modulares Ollama-KI-Modul (!ki)
 profanity.js     # Schimpfwort-Erkennung
 package.json     # Dependencies (ESM)
 .env             # Geheimnisse (nicht committen)
 auth_baileys/    # WhatsApp-Session (nicht committen)
+ki_memory/       # Persistentes KI-Conversation-Memory (nicht committen)
 ```
 
 ---

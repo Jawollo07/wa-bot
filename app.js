@@ -23,25 +23,35 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import * as profanity from './profanity.js';
-import { handleKiCommand, checkOllama, getKiConfig } from './ollama.js';
+import { handleKiCommand, checkOllama, getKiConfig, applyKiConfig, initKiDb } from './ollama.js';
+import {
+    initBotConfig,
+    reloadBotConfig,
+    getConfig,
+    setConfig,
+    getPrefix,
+    getAuthDir,
+    getPhoneNumber,
+    getBotOwners,
+    getSpamLimit,
+    getKiSettingsFromDb,
+    formatConfigList,
+    isKnownConfigKey,
+    CONFIG_DEFAULTS
+} from './config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PREFIX = process.env.COMMAND_PREFIX || '!';
-const AUTH_DIR = process.env.BAILEYS_AUTH_PATH || path.join(__dirname, 'auth_baileys');
 const SYSTEM_GROUP = 'SYSTEM';
 
+/** Nur DB-Zugang bleibt in .env – Rest in MySQL bot_config */
 const CONFIG = {
-    phoneNumber: process.env.PHONE_NUMBER,
-    botOwners: (process.env.BOT_OWNERS || process.env.PHONE_NUMBER || '')
-        .split(',')
-        .map(s => s.trim().replace(/\D/g, ''))
-        .filter(Boolean),
     db: {
         host: process.env.DB_HOST,
         user: process.env.DB_USER,
         password: process.env.DB_PASSWORD,
         database: process.env.DB_DATABASE,
-        port: Number(process.env.DB_PORT) || 3306
+        port: Number(process.env.DB_PORT) || 3306,
+        connectionLimit: Number(process.env.DB_POOL_SIZE) || 10
     },
     defaultSettings: {
         isActive: false,
@@ -53,17 +63,21 @@ const CONFIG = {
         allowAudios: true,
         antiSpam: true,
         welcomeActive: false,
+        allowKi: true,
         welcomeMsg: 'Willkommen in der Gruppe, @user! 👋',
         leaveMsg: 'Ein Nutzer hat die Gruppe verlassen. 😢'
     },
-    spamLimit: {
-        maxMessages: Number(process.env.SPAM_MAX_MESSAGES) || 5,
-        timeFrameMs: Number(process.env.SPAM_TIMEFRAME_MS) || 5000
-    },
     wordUrls: [
-        'https://raw.githubusercontent.com/AdvancedPlugins/Chat/main/swear%20words/de.json',
+        'https://raw.githubusercontent.com/AdvancedPlugins/Chat/main/swear%20words/de.json'
     ]
 };
+
+function PREFIX() {
+    return getPrefix();
+}
+function AUTH_DIR() {
+    return getAuthDir();
+}
 
 let dbPool;
 let sock = null;
@@ -91,7 +105,7 @@ function isBotOwner(senderId) {
     if (!senderId) return false;
     const num = normalizePhone(senderId);
     if (num.length < 8) return false;
-    return CONFIG.botOwners.some(owner => {
+    return getBotOwners().some(owner => {
         if (!owner || owner.length < 8) return false;
         return num === owner || num.endsWith(owner) || owner.endsWith(num);
     });
@@ -186,6 +200,7 @@ async function initDatabase() {
     await ensureColumn('group_settings', 'welcome_active', 'TINYINT(1) DEFAULT 0');
     await ensureColumn('group_settings', 'welcome_msg', 'TEXT');
     await ensureColumn('group_settings', 'leave_msg', 'TEXT');
+    await ensureColumn('group_settings', 'allow_ki', 'TINYINT(1) DEFAULT 1');
 
     // === erweiterte mod_logs Tabelle ===
     await dbPool.query(
@@ -275,8 +290,8 @@ async function getGroupSettings(groupId) {
     if (rows.length === 0) {
         const d = CONFIG.defaultSettings;
         await dbPool.query(
-            'INSERT IGNORE INTO group_settings (group_id, is_active, allow_links, allow_stickers, allow_images, allow_videos, allow_audios, anti_spam, max_warnings, welcome_active, welcome_msg, leave_msg) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [groupId, d.isActive ? 1 : 0, d.allowLinks ? 1 : 0, d.allowStickers ? 1 : 0, d.allowImages ? 1 : 0, d.allowVideos ? 1 : 0, d.allowAudios ? 1 : 0, d.antiSpam ? 1 : 0, d.maxWarnings, d.welcomeActive ? 1 : 0, d.welcomeMsg, d.leaveMsg]
+            'INSERT IGNORE INTO group_settings (group_id, is_active, allow_links, allow_stickers, allow_images, allow_videos, allow_audios, anti_spam, max_warnings, welcome_active, welcome_msg, leave_msg, allow_ki) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [groupId, d.isActive ? 1 : 0, d.allowLinks ? 1 : 0, d.allowStickers ? 1 : 0, d.allowImages ? 1 : 0, d.allowVideos ? 1 : 0, d.allowAudios ? 1 : 0, d.antiSpam ? 1 : 0, d.maxWarnings, d.welcomeActive ? 1 : 0, d.welcomeMsg, d.leaveMsg, d.allowKi !== false ? 1 : 0]
         );
         const [again] = await dbPool.query('SELECT * FROM group_settings WHERE group_id = ?', [groupId]);
         if (again.length) {
@@ -300,6 +315,7 @@ function mapSettingsRow(r) {
         antiSpam: dbFlag(r.anti_spam, true),
         maxWarnings: r.max_warnings != null ? Number(r.max_warnings) : CONFIG.defaultSettings.maxWarnings,
         welcomeActive: dbFlag(r.welcome_active, false),
+        allowKi: dbFlag(r.allow_ki, true),
         welcomeMsg: r.welcome_msg || CONFIG.defaultSettings.welcomeMsg,
         leaveMsg: r.leave_msg || CONFIG.defaultSettings.leaveMsg
     };
@@ -340,10 +356,11 @@ function isSpamming(groupId, userId) {
     const key = groupId + '_' + userId;
     const now = Date.now();
     let timestamps = messageTimestamps.get(key) || [];
-    timestamps = timestamps.filter(ts => now - ts < CONFIG.spamLimit.timeFrameMs);
+    const spam = getSpamLimit();
+    timestamps = timestamps.filter(ts => now - ts < spam.timeFrameMs);
     timestamps.push(now);
     messageTimestamps.set(key, timestamps);
-    return timestamps.length > CONFIG.spamLimit.maxMessages;
+    return timestamps.length > getSpamLimit().maxMessages;
 }
 
 async function addWarning(groupId, userId) {
@@ -518,7 +535,7 @@ function parseMentionsFromText(text, msg) {
 async function handleAdminCommands(msg, meta, settings, groupId, senderId, text) {
     const args = text.trim().split(/\s+/);
     const command = args[0].toLowerCase();
-    const p = PREFIX;
+    const p = PREFIX();
     const mentions = parseMentionsFromText(text, msg);
     const reply = async (t, ments = []) => sendText(groupId, t, ments);
 
@@ -547,7 +564,7 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
     if (command === p + 'info') {
         const ki = getKiConfig();
         await reply(
-            '🤖 *wa-bot v3.2.0 (Baileys + Ollama)*\n' +
+            '🤖 *wa-bot v3.4.0 (Baileys + Ollama)*\n' +
             '• Uptime: ' + formatUptime(Date.now() - botStartTime) + '\n' +
             '• Nachrichten: ' + stats.messages + '\n' +
             '• Verstöße: ' + stats.violations + '\n' +
@@ -640,7 +657,16 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
     }
     if (command === p + 'toggle' && args[1]) {
         const option = args[1].toLowerCase();
-        const validOptions = { links: 'allow_links', stickers: 'allow_stickers', images: 'allow_images', videos: 'allow_videos', audios: 'allow_audios', antispam: 'anti_spam', welcome: 'welcome_active' };
+        const validOptions = {
+            links: 'allow_links',
+            stickers: 'allow_stickers',
+            images: 'allow_images',
+            videos: 'allow_videos',
+            audios: 'allow_audios',
+            antispam: 'anti_spam',
+            welcome: 'welcome_active',
+            ki: 'allow_ki'
+        };
         if (validOptions[option]) {
             const field = validOptions[option];
             const camelKey = field.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
@@ -649,7 +675,7 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
             await logAction(groupId, 'settings', 'TOGGLE', option + ' → ' + (newVal ? 'ON' : 'OFF'), senderId, { option, newVal });
             await reply('✅ *' + option + '* ist jetzt: ' + (newVal ? 'AN ✅' : 'AUS ❌'));
         } else {
-            await reply('⚠️ Optionen: links, stickers, images, videos, audios, antispam, welcome');
+            await reply('⚠️ Optionen: links, stickers, images, videos, audios, antispam, welcome, ki');
         }
         return true;
     }
@@ -688,7 +714,16 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
         return true;
     }
     if (command === p + 'settings') {
-        await reply('⚙️ **Gruppen-Einstellungen**\n\n• Status: ' + (settings.isActive ? '🟢' : '🔴') + '\n• Willkommen: ' + (settings.welcomeActive ? '✅' : '❌') + '\n• Links: ' + (settings.allowLinks ? '✅' : '❌') + ' | Sticker: ' + (settings.allowStickers ? '✅' : '❌') + '\n• Bilder: ' + (settings.allowImages ? '✅' : '❌') + ' | Videos: ' + (settings.allowVideos ? '✅' : '❌') + '\n• Audio: ' + (settings.allowAudios ? '✅' : '❌') + ' | Anti-Spam: ' + (settings.antiSpam ? '✅' : '❌') + '\n• Max. Verwarnungen: ' + settings.maxWarnings);
+        await reply(
+            '⚙️ **Gruppen-Einstellungen**\n\n' +
+            '• Status: ' + (settings.isActive ? '🟢' : '🔴') + '\n' +
+            '• Willkommen: ' + (settings.welcomeActive ? '✅' : '❌') + '\n' +
+            '• KI (!ki): ' + (settings.allowKi ? '✅' : '❌') + '\n' +
+            '• Links: ' + (settings.allowLinks ? '✅' : '❌') + ' | Sticker: ' + (settings.allowStickers ? '✅' : '❌') + '\n' +
+            '• Bilder: ' + (settings.allowImages ? '✅' : '❌') + ' | Videos: ' + (settings.allowVideos ? '✅' : '❌') + '\n' +
+            '• Audio: ' + (settings.allowAudios ? '✅' : '❌') + ' | Anti-Spam: ' + (settings.antiSpam ? '✅' : '❌') + '\n' +
+            '• Max. Verwarnungen: ' + settings.maxWarnings
+        );
         return true;
     }
     if (command === p + 'ban') {
@@ -827,12 +862,59 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
         await reply('✅ Schimpfwort *' + word + '* entfernt.');
         return true;
     }
+    // ===== Globale Config (MySQL bot_config) – nur Owner =====
+    if (command === p + 'config' || command === p + 'cfg') {
+        if (!isBotOwner(senderId)) {
+            await reply('⛔ Nur Bot-Owner dürfen die globale Config sehen.');
+            return true;
+        }
+        await reply('⚙️ *Bot-Config (MySQL `bot_config`)*\n\n' + formatConfigList(false) +
+            '\n\nÄndern: `' + p + 'setconfig <key> <wert>`\nNeu laden: `' + p + 'reloadconfig`');
+        return true;
+    }
+    if (command === p + 'setconfig' || command === p + 'setcfg') {
+        if (!isBotOwner(senderId)) {
+            await reply('⛔ Nur Bot-Owner.');
+            return true;
+        }
+        const key = (args[1] || '').toLowerCase();
+        const value = args.slice(2).join(' ').trim();
+        if (!key || value === '') {
+            await reply('⚠️ Nutzung: `' + p + 'setconfig <key> <wert>`\nKeys: `!config`\nBeispiel: `' + p + 'setconfig ollama_model qwen3.5:9b`');
+            return true;
+        }
+        if (!isKnownConfigKey(key) && !(key in CONFIG_DEFAULTS)) {
+            await reply('⚠️ Unbekannter Key. Bekannte Keys: `!config`');
+            return true;
+        }
+        try {
+            await setConfig(key, value);
+            applyKiConfig(getKiSettingsFromDb());
+            await logAction(SYSTEM_GROUP, 'config', 'SET_CONFIG', key + '=' + value.slice(0, 120), senderId);
+            await reply('✅ `' + key + '` = ' + (value.length > 200 ? value.slice(0, 200) + '…' : value) + '\n(KI-Config neu angewendet)');
+        } catch (e) {
+            await reply('❌ ' + (e.message || e));
+        }
+        return true;
+    }
+    if (command === p + 'reloadconfig' || command === p + 'reloadcfg') {
+        if (!isBotOwner(senderId)) {
+            await reply('⛔ Nur Bot-Owner.');
+            return true;
+        }
+        await reloadBotConfig();
+        applyKiConfig(getKiSettingsFromDb());
+        await logAction(SYSTEM_GROUP, 'config', 'RELOAD_CONFIG', null, senderId);
+        await reply('🔄 Config aus MySQL neu geladen. Prefix: `' + PREFIX() + '` · Modell: `' + getKiConfig().model + '`');
+        return true;
+    }
+
     if (command === p + 'help') {
         await reply(
             '🛠 *Admin-Befehle (Baileys v3)*\n\n' +
             '• `' + p + 'bot on/off`\n' +
             '• `' + p + 'settings` / `' + p + 'stats` / `' + p + 'info` / `' + p + 'ping` / `' + p + 'logs [n]`\n' +
-            '• `' + p + 'toggle <links|stickers|images|videos|audios|antispam|welcome>`\n' +
+            '• `' + p + 'toggle <links|stickers|images|videos|audios|antispam|welcome|ki>`\n' +
             '• `' + p + 'maxwarns <1-20>`\n' +
             '• `' + p + 'setwelcome` / `' + p + 'setleave`\n' +
             '• `' + p + 'lock` / `' + p + 'unlock`\n' +
@@ -840,12 +922,11 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
             '• `' + p + 'ban @User [Dauer] [Grund]` / `' + p + 'unban` / `' + p + 'banned`\n' +
             '• `' + p + 'kick`\n' +
             '• `' + p + 'warns` / `' + p + 'resetwarns` / `' + p + 'clearwarns`\n' +
-            '• `' + p + 'addword` / `' + p + 'delword`\n\n' +
+            '• `' + p + 'addword` / `' + p + 'delword`\n' +
+            '• `' + p + 'config` / `' + p + 'setconfig` / `' + p + 'reloadconfig` (Owner)\n\n' +
             '🤖 *KI (Ollama)* – für alle Nutzer:\n' +
-            '• `' + p + 'ki <Frage>` – Ollama fragen (kennt Mitglieder)\n' +
-            '• `' + p + 'kistatus` – Status & Modell\n' +
-            '• `' + p + 'kimembers` – bekannte Mitgliedernamen\n' +
-            '• `' + p + 'resetki` – Memory dieses Chats löschen'
+            '• `' + p + 'ki <Frage>` · `' + p + 'kistatus` · `' + p + 'kimembers`\n' +
+            '• `' + p + 'resetki` · `' + p + 'ki resetmembers`'
         );
         return true;
     }
@@ -917,7 +998,7 @@ async function onIncomingMessage(msg) {
         const adminHit = isParticipantAdmin(meta, senderId);
         const isAdmin = ownerHit || adminHit;
         if (isAdmin) log('👤 Rechte: owner=' + ownerHit + ' groupAdmin=' + adminHit + ' sender=' + senderId);
-        if (isAdmin && text.startsWith(PREFIX)) {
+        if (isAdmin && text.startsWith(PREFIX())) {
             const handled = await handleAdminCommands(msg, meta, settings, groupId, senderId, text);
             if (handled) {
                 stats.commands++;
@@ -929,21 +1010,20 @@ async function onIncomingMessage(msg) {
             }
         }
 
-        // ===== KI-Modul (!ki / !kistatus / !resetki) – modular aus ollama.js =====
-        // Erlaubt für alle Nutzer, sobald der Bot in der Gruppe aktiv ist
-        // (oder Admin-Befehle, auch wenn Bot inaktiv – Status prüfen bleibt sinnvoll)
-        if (text.startsWith(PREFIX)) {
+        // ===== KI-Modul (!ki …) – modular aus ollama.js, Default qwen3.5:9b =====
+        if (text.startsWith(PREFIX())) {
             const lower = text.trim().toLowerCase();
-            const p = PREFIX;
+            const p = PREFIX();
             const isKiCmd =
                 lower === p + 'ki' ||
                 lower.startsWith(p + 'ki ') ||
                 lower === p + 'kistatus' ||
                 lower === p + 'resetki' ||
-                lower === p + 'kimembers';
+                lower === p + 'kimembers' ||
+                lower === p + 'resetkimembers';
 
             if (isKiCmd) {
-                // !kistatus / !kimembers immer erlauben; !ki / !resetki nur wenn Gruppe aktiv
+                // Status/Mitglieder immer; Fragen nur wenn Gruppe aktiv
                 const sub = text.trim().split(/\s+/)[1]?.toLowerCase();
                 const needsActive = !(
                     lower === p + 'kistatus' ||
@@ -955,7 +1035,10 @@ async function onIncomingMessage(msg) {
                     return;
                 }
                 const pushName = msg.pushName || 'User';
-                const handled = await handleKiCommand(sock, msg, groupId, senderId, text, pushName);
+                const handled = await handleKiCommand(sock, msg, groupId, senderId, text, pushName, {
+                    allowKi: settings.allowKi !== false,
+                    prefix: PREFIX()
+                });
                 if (handled) {
                     stats.commands++;
                     log('✅ KI-Befehl ausgeführt');
@@ -1007,7 +1090,7 @@ async function onIncomingMessage(msg) {
 }
 
 async function startSocket() {
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR());
     let version;
     try {
         const v = await fetchLatestBaileysVersion();
@@ -1035,10 +1118,10 @@ async function startSocket() {
         if (qr) {
             console.log('\n📷 QR-Code (mit WhatsApp scannen):\n');
             qrcode.generate(qr, { small: true });
-            if (!pairingRequested && CONFIG.phoneNumber) {
+            if (!pairingRequested && getPhoneNumber()) {
                 pairingRequested = true;
                 try {
-                    const code = await sock.requestPairingCode(CONFIG.phoneNumber.replace(/\D/g, ''));
+                    const code = await sock.requestPairingCode(getPhoneNumber());
                     console.log('\n🔑 DEIN KOPPLUNGSCODE: ' + code + '\n');
                 } catch (e) {
                     log('⚠️ Pairing-Code: ' + (e.message || e));
@@ -1063,7 +1146,7 @@ async function startSocket() {
             if (shouldReconnect) {
                 setTimeout(() => startSocket().catch(e => console.error(e)), 3000);
             } else {
-                log('❌ Ausgeloggt – Auth-Ordner löschen und neu koppeln: ' + AUTH_DIR);
+                log('❌ Ausgeloggt – Auth-Ordner löschen und neu koppeln: ' + AUTH_DIR());
                 await logAction(SYSTEM_GROUP, 'bot', 'LOGGED_OUT', 'Auth neu koppeln erforderlich', 'system');
             }
         }
@@ -1081,12 +1164,15 @@ async function startSocket() {
 
 async function startBot() {
     try {
-        if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
+        if (!fs.existsSync(AUTH_DIR())) fs.mkdirSync(AUTH_DIR(), { recursive: true });
         await initDatabase();
+        await initBotConfig(dbPool);
+        applyKiConfig(getKiSettingsFromDb());
+        await initKiDb(dbPool);
+        log('⚙️ Config aus MySQL (bot_config) · KI-Memory in DB · Prefix: ' + PREFIX());
         await logAction(SYSTEM_GROUP, 'bot', 'BOT_START', 'Bot startet', 'system');
         await syncAndLoadBadWords();
 
-        // Ollama-Healthcheck (nicht blockierend – Bot läuft auch ohne KI)
         const kiCfg = getKiConfig();
         if (kiCfg.enabled) {
             const info = await checkOllama();
@@ -1096,10 +1182,10 @@ async function startBot() {
                     ' | Verfügbar: ' + (info.models.slice(0, 5).join(', ') || '–'));
             } else {
                 log('⚠️ Ollama nicht erreichbar (' + info.host + '): ' + (info.error || 'offline') +
-                    ' – !ki ist deaktiviert bis Ollama läuft');
+                    ' – !ki wartet bis Ollama läuft');
             }
         } else {
-            log('🤖 KI deaktiviert (KI_ENABLED=false)');
+            log('🤖 KI deaktiviert (bot_config: ki_enabled=false)');
         }
 
         await startSocket();
