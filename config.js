@@ -37,7 +37,13 @@ export const CONFIG_DEFAULTS = {
   ki_repeat_penalty: '1.1',
   ki_num_ctx: '8192',
   ki_timeout_ms: '90000',
-  system_prompt: ''
+  system_prompt: '',
+
+  // Hybrid-Schimpfwort-Erkennung (klassisch + KI)
+  ki_profanity_enabled: 'true',
+  ki_profanity_timeout_ms: '8000',
+  ki_profanity_min_length: '3',
+  ki_profanity_max_length: '500'
 };
 
 /** Keys die nicht per !setconfig öffentlich angezeigt/geändert werden sollten */
@@ -75,7 +81,11 @@ function envFallback(key, def) {
     baileys_auth_path: 'BAILEYS_AUTH_PATH',
     baileys_log_level: 'BAILEYS_LOG_LEVEL',
     phone_number: 'PHONE_NUMBER',
-    bot_owners: 'BOT_OWNERS'
+    bot_owners: 'BOT_OWNERS',
+    ki_profanity_enabled: 'KI_PROFANITY_ENABLED',
+    ki_profanity_timeout_ms: 'KI_PROFANITY_TIMEOUT_MS',
+    ki_profanity_min_length: 'KI_PROFANITY_MIN_LENGTH',
+    ki_profanity_max_length: 'KI_PROFANITY_MAX_LENGTH'
   };
   const alt = aliases[key];
   if (alt && process.env[alt] != null && process.env[alt] !== '') {
