@@ -23,11 +23,13 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import * as profanity from './profanity.js';
-import { handleKiCommand, checkOllama, getKiConfig, applyKiConfig, initKiDb } from './ollama.js';
+import { handleKiCommand, checkOllama, getKiConfig, applyKiConfig, initKiDb, checkProfanityWithKi } from './ollama.js';
 import {
     initBotConfig,
     reloadBotConfig,
     getConfig,
+    getConfigBool,
+    getConfigInt,
     setConfig,
     getPrefix,
     getAuthDir,
@@ -563,13 +565,14 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
     }
     if (command === p + 'info') {
         const ki = getKiConfig();
+        const kiProf = getConfigBool('ki_profanity_enabled', true);
         await reply(
-            '🤖 *wa-bot v3.4.0 (Baileys + Ollama)*\n' +
+            '🤖 *wa-bot v3.5.0 (Baileys + Ollama)*\n' +
             '• Uptime: ' + formatUptime(Date.now() - botStartTime) + '\n' +
             '• Nachrichten: ' + stats.messages + '\n' +
             '• Verstöße: ' + stats.violations + '\n' +
             '• Befehle: ' + stats.commands + '\n' +
-            '• Schimpfwörter: ' + loadedBadWords.length + '\n' +
+            '• Schimpfwörter: ' + loadedBadWords.length + ' (Hybrid: klassisch' + (kiProf ? ' + KI' : '') + ')\n' +
             '• Gruppe: ' + (settings.isActive ? '🟢 aktiv' : '🔴 inaktiv') + '\n' +
             '• KI: ' + (ki.enabled ? '✅ (' + ki.model + ')' : '❌ deaktiviert')
         );
@@ -926,7 +929,8 @@ async function handleAdminCommands(msg, meta, settings, groupId, senderId, text)
             '• `' + p + 'config` / `' + p + 'setconfig` / `' + p + 'reloadconfig` (Owner)\n\n' +
             '🤖 *KI (Ollama)* – für alle Nutzer:\n' +
             '• `' + p + 'ki <Frage>` · `' + p + 'kistatus` · `' + p + 'kimembers`\n' +
-            '• `' + p + 'resetki` · `' + p + 'ki resetmembers`'
+            '• `' + p + 'resetki` · `' + p + 'ki resetmembers`\n\n' +
+            '🔤 *Schimpfwörter*: Hybrid (Wortliste + KI). Owner: `!setconfig ki_profanity_enabled true/false`'
         );
         return true;
     }
@@ -1071,6 +1075,8 @@ async function onIncomingMessage(msg) {
         if (!violationReason && !settings.allowLinks && text && /(https?:\/\/[^\s]+|chat\.whatsapp\.com\/[a-zA-Z0-9]+)/i.test(text)) {
             violationReason = 'Links sind nicht gestattet.';
         }
+
+        // 1) Klassische Schimpfwort-Erkennung (schnell)
         if (!violationReason && text) {
             const hit = profanity.findBadWord(text);
             if (hit) {
@@ -1078,6 +1084,26 @@ async function onIncomingMessage(msg) {
                 violationReason = 'Schimpfwort erkannt.';
             }
         }
+
+        // 2) Hybrid: KI-Prüfung nur wenn klassisch nichts gefunden hat
+        if (!violationReason && text && getConfigBool('ki_profanity_enabled', true)) {
+            const minLen = getConfigInt('ki_profanity_min_length', 3);
+            const maxLen = getConfigInt('ki_profanity_max_length', 500);
+            const t = text.trim();
+            if (t.length >= minLen && t.length <= maxLen) {
+                try {
+                    const timeoutMs = getConfigInt('ki_profanity_timeout_ms', 8000);
+                    const kiResult = await checkProfanityWithKi(t, { timeoutMs });
+                    if (kiResult && kiResult.bad) {
+                        log('🤖 KI-Schimpfwort erkannt (raw: ' + (kiResult.raw || 'JA') + ')');
+                        violationReason = 'Beleidigung/Schimpfwort (KI erkannt).';
+                    }
+                } catch (e) {
+                    log('⚠️ KI-Profanity-Check Fehler: ' + (e.message || e));
+                }
+            }
+        }
+
         if (violationReason) {
             stats.violations++;
             log('🚨 ' + violationReason + (isAdmin ? ' (Admin)' : ''));
@@ -1130,7 +1156,7 @@ async function startSocket() {
         }
         if (connection === 'open') {
             botStartTime = Date.now();
-            log('🤖 Moderations-Bot v3.1.0 ist einsatzbereit!');
+            log('🤖 Moderations-Bot v3.5.0 ist einsatzbereit!');
             await logAction(SYSTEM_GROUP, 'bot', 'CONNECTED', 'WhatsApp-Verbindung hergestellt', 'system');
         }
         if (connection === 'close') {
@@ -1170,6 +1196,7 @@ async function startBot() {
         applyKiConfig(getKiSettingsFromDb());
         await initKiDb(dbPool);
         log('⚙️ Config aus MySQL (bot_config) · KI-Memory in DB · Prefix: ' + PREFIX());
+        log('🔤 Hybrid-Schimpfwörter: klassisch' + (getConfigBool('ki_profanity_enabled', true) ? ' + KI' : ' (KI aus)') );
         await logAction(SYSTEM_GROUP, 'bot', 'BOT_START', 'Bot startet', 'system');
         await syncAndLoadBadWords();
 
@@ -1182,7 +1209,7 @@ async function startBot() {
                     ' | Verfügbar: ' + (info.models.slice(0, 5).join(', ') || '–'));
             } else {
                 log('⚠️ Ollama nicht erreichbar (' + info.host + '): ' + (info.error || 'offline') +
-                    ' – !ki wartet bis Ollama läuft');
+                    ' – !ki und KI-Profanity warten bis Ollama läuft');
             }
         } else {
             log('🤖 KI deaktiviert (bot_config: ki_enabled=false)');
