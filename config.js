@@ -40,10 +40,11 @@ export const CONFIG_DEFAULTS = {
   system_prompt: '',
 
   // Hybrid-Schimpfwort-Erkennung (klassisch + KI)
+  // max_length höher, damit auch längere Nachrichten/Kontexte geprüft werden
   ki_profanity_enabled: 'true',
-  ki_profanity_timeout_ms: '8000',
+  ki_profanity_timeout_ms: '12000',
   ki_profanity_min_length: '3',
-  ki_profanity_max_length: '500'
+  ki_profanity_max_length: '4000'
 };
 
 /** Keys die nicht per !setconfig öffentlich angezeigt/geändert werden sollten */
