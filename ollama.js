@@ -7,6 +7,8 @@
  *   - ki_chat_memory (Chatverlauf als JSON)
  *   - ki_members (Namen pro Gruppe)
  * Einmalige Migration: lokale ki_memory/*.json → DB, danach löschen
+ *
+ * Hybrid-Moderation: checkProfanityWithKi() für KI-gestützte Schimpfwort-Erkennung
  */
 import { Ollama } from 'ollama';
 import fs from 'fs';
@@ -99,7 +101,9 @@ const stats = {
   replies: 0,
   errors: 0,
   timeouts: 0,
-  rateLimited: 0
+  rateLimited: 0,
+  profanityChecks: 0,
+  profanityHits: 0
 };
 
 /**
@@ -484,6 +488,72 @@ function withTimeout(promise, ms, label = 'Timeout') {
 }
 
 /**
+ * Schnelle, deterministische KI-Prüfung auf Beleidigungen / Schimpfwörter.
+ * Fail-open: Bei Fehler/Timeout wird { bad: false } zurückgegeben.
+ *
+ * @param {string} text
+ * @param {{ timeoutMs?: number }} [opts]
+ * @returns {Promise<{ bad: boolean, raw?: string }>}
+ */
+export async function checkProfanityWithKi(text, opts = {}) {
+  if (!KI_CONFIG.enabled || !text || typeof text !== 'string') {
+    return { bad: false };
+  }
+  const clean = String(text).trim().slice(0, 500);
+  if (clean.length < 2) return { bad: false };
+
+  const timeoutMs = opts.timeoutMs != null ? opts.timeoutMs : 8000;
+
+  const prompt =
+    `Du bist ein strenger Moderationsfilter für eine WhatsApp-Gruppe.\n` +
+    `Prüfe den folgenden Text auf Beleidigungen, Schimpfwörter, Sexismus, Rassismus, Homophobie oder klare Hate-Speech.\n` +
+    `Ignoriere harmlosen Slang, Ironie, Witze und normale Umgangssprache.\n` +
+    `Antworte AUSSCHLIESSLICH mit JA oder NEIN (Großbuchstaben). Nichts anderes.\n\n` +
+    `Text:\n"""\n${clean}\n"""`;
+
+  stats.profanityChecks++;
+  try {
+    const response = await withTimeout(
+      ollama.chat({
+        model: KI_CONFIG.model,
+        messages: [{ role: 'user', content: prompt }],
+        stream: false,
+        options: {
+          num_predict: 8,
+          temperature: 0.05,
+          top_p: 0.9,
+          top_k: 20,
+          num_ctx: 2048
+        }
+      }),
+      timeoutMs,
+      `Profanity-KI Timeout (${Math.round(timeoutMs / 1000)}s)`
+    );
+
+    const raw = (response.message?.content || '').trim().toUpperCase();
+    // Erstes Wort entscheiden (JA / NEIN)
+    const first = (raw.split(/\s+|[^A-ZÄÖÜ]/)[0] || '').replace(/[^A-Z]/g, '');
+    const isBad =
+      first === 'JA' ||
+      first === 'YES' ||
+      first === 'TRUE' ||
+      (raw.startsWith('JA') && !raw.includes('NEIN'));
+
+    if (isBad) stats.profanityHits++;
+    return { bad: isBad, raw: raw.slice(0, 40) };
+  } catch (err) {
+    if (String(err.message || '').includes('Timeout')) {
+      stats.timeouts++;
+    } else {
+      stats.errors++;
+    }
+    console.error('[KI-Profanity]', err.message || err);
+    // Fail-open: lieber verpassen als falsch positiv bei Fehler
+    return { bad: false };
+  }
+}
+
+/**
  * @param {string} chatId
  * @param {string} userMessage
  * @param {string} senderName
@@ -654,6 +724,7 @@ export async function handleKiCommand(sock, msg, groupId, senderId, text, pushNa
       `• Memory: ${histLen}/${KI_CONFIG.memoryLimit} Einträge · ${conversations.size} Chats geladen`,
       `• Mitglieder: ${memberCount} · dein Name: *${memberName}*`,
       `• Stats: ${stats.requests} Anfragen · ${stats.replies} Antworten · ${stats.errors} Fehler · ${stats.timeouts} Timeouts · ${stats.rateLimited} Rate-Limits`,
+      `• Profanity-KI: ${stats.profanityChecks} Checks · ${stats.profanityHits} Treffer`,
       info.models.length ? `• Installiert: ${info.models.slice(0, 8).join(', ')}` : ''
     ].filter(Boolean);
     await sock.sendMessage(groupId, { text: lines.join('\n') }, { quoted: msg });
