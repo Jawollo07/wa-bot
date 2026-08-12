@@ -1,4 +1,4 @@
-# wa-bot v3 (Baileys)
+# wa-bot v3.4 (Baileys)
 
 WhatsApp-**Moderations-Bot** auf Basis von [Baileys](https://github.com/WhiskeySockets/Baileys) und **MySQL**.
 
@@ -10,7 +10,7 @@ Kein Puppeteer/Chrome – reine WebSocket-Verbindung zu WhatsApp.
 
 | Bereich | Funktionen |
 |--------|------------|
-| **Filter** | Schimpfwörter (Leetspeak, Trennzeichen, Wiederholungen), Links, Sticker, Bilder, Videos, Audio |
+| **Filter** | Schimpfwörter hybrid (klassische Liste + optional KI), Leetspeak/Trennzeichen/Wiederholungen, Links, Sticker, Bilder, Videos, Audio |
 | **Anti-Spam** | Rate-Limit pro Nutzer |
 | **Verwarnungen** | Automatisch, Kick bei Max, Admin-Schutz beim Kick |
 | **Mute** | Stummschalten (Nachrichten werden gelöscht) |
@@ -18,7 +18,7 @@ Kein Puppeteer/Chrome – reine WebSocket-Verbindung zu WhatsApp.
 | **Gruppe** | Lock/Unlock, Kick, Stats, Willkommen/Abschied |
 | **Logging** | Vollständiges MySQL-Logging aller Moderations- und Admin-Aktionen |
 | **Admin** | `!help` und viele weitere Befehle |
-| **KI (Ollama)** | `!ki` mit **qwen3.5:9b**, Memory, Mitglieder-Namen (modular in `ollama.js`) |
+| **KI (Ollama)** | `!ki` mit **qwen3.5:9b**, Conversation-Memory + Mitglieder-Namen in MySQL |
 
 ---
 
@@ -27,7 +27,7 @@ Kein Puppeteer/Chrome – reine WebSocket-Verbindung zu WhatsApp.
 - **Node.js** ≥ 18 (empfohlen: 20+)
 - **MySQL** 5.7+ / 8 / MariaDB (**persistenter** Speicher!)
 - WhatsApp-Konto (Handy mit Internet)
-- **Ollama** (optional, für `!ki`) – [ollama.com](https://ollama.com)
+- **Ollama** (optional, für `!ki` und KI-Profanity) – [ollama.com](https://ollama.com)
 
 ---
 
@@ -45,7 +45,7 @@ node app.js
 ### Erste Anmeldung
 
 1. Bot starten
-2. **QR-Code** im Terminal mit WhatsApp scannen  
+2. **QR-Code** im Terminal mit WhatsApp scannen
    **oder** Pairing-Code nutzen (`PHONE_NUMBER` in `.env`)
 3. Auth-Daten landen in `auth_baileys/`
 
@@ -84,16 +84,16 @@ DB_PORT=3306
 
 ### MySQL-Tabelle `bot_config`
 
-Alle Laufzeit-Einstellungen (Ollama, Prefix, Spam, …) liegen in **`bot_config`** (Key/Value).  
+Alle Laufzeit-Einstellungen (Ollama, Prefix, Spam, …) liegen in **`bot_config`** (Key/Value).
 Beim ersten Start werden Defaults geschrieben; vorhandene `.env`-Werte werden einmalig migriert.
 
 | Befehl (Owner) | Beschreibung |
 |----------------|--------------|
 | `!config` | Alle Keys anzeigen |
-| `!setconfig <key> <wert>` | z. B. `!setconfig ollama_model qwen3.5:9b` |
+| `!setconfig <key> <wert>` | z. B. `!setconfig ollama_model qwen3.5:9b` |
 | `!reloadconfig` | Neu aus DB laden + KI anwenden |
 
-Wichtige Keys: `ollama_host`, `ollama_model`, `ki_enabled`, `max_tokens`, `memory_limit`, `ki_temperature`, `ki_timeout_ms`, `command_prefix`, `spam_max_messages`, `system_prompt`, `phone_number`, `bot_owners`, …
+Wichtige Keys: `ollama_host`, `ollama_model`, `ki_enabled`, `max_tokens`, `memory_limit`, `ki_temperature`, `ki_timeout_ms`, `command_prefix`, `spam_max_messages`, `settings_cache_ttl_ms`, `reconnect_base_ms`, `system_prompt`, `phone_number`, `bot_owners`, `ki_profanity_enabled`, …
 
 ---
 
@@ -121,7 +121,7 @@ Nur **Gruppen-Admins** und **Bot-Owner** (`PHONE_NUMBER` / `BOT_OWNERS`).
 
 ### Filter umschalten
 ```text
-!toggle links|stickers|images|videos|audios|antispam|welcome
+!toggle links|stickers|images|videos|audios|antispam|welcome|ki
 ```
 
 ### Verwarnungen
@@ -159,7 +159,7 @@ Gebannte Nutzer werden bei **jedem Wiedereintritt** automatisch wieder gekickt.
 
 ### KI (Ollama) – für alle Nutzer
 
-**Standardmodell: `qwen3.5:9b`** (gutes Deutsch, starke Anweisungsbefolgung, passt auf ~8–12 GB RAM).
+**Standardmodell: `qwen3.5:9b`** (gutes Deutsch, starke Anweisungsbefolgung, passt auf ~8–12 GB RAM).
 
 ```bash
 ollama pull qwen3.5:9b
@@ -178,11 +178,12 @@ Die Gruppe muss mit `!bot on` aktiv sein (außer `!kistatus` / `!kimembers`).
 | `!ki resetmembers` | Namens-Registry neu lernen |
 | `!toggle ki` | KI pro Gruppe an/aus (Admin) |
 
-**Mitglieder-Unterscheidung:** Nachrichten als `Jan: …`, `Tom: …`.  
-Unbekannte: `Mitglied_1234` → Update bei echtem Anzeigenamen.  
-Registry: `ki_memory/members_*.json`.
+**Mitglieder-Unterscheidung:** Nachrichten als `Jan: …`, `Tom: …`.
+Unbekannte: `Mitglied_1234` → Update bei echtem Anzeigenamen.
 
-Weitere Features: Request-Timeout (`KI_TIMEOUT_MS`), Deduplizierung, Rate-Limit, Stats in `!kistatus`.
+**Persistenz (ab v3.4):** Chat-Memory und Mitglieder liegen in MySQL (`ki_chat_memory`, `ki_members`). Alte lokale `ki_memory/*.json`-Dateien werden beim Start einmalig migriert und entfernt.
+
+Weitere Features: Request-Timeout, Deduplizierung, Rate-Limit, Stats in `!kistatus`, Hybrid-Profanity (klassisch + KI).
 
 Modul: `ollama.js` – optimiert für **Qwen 3.5** (Temperature, Kontext, Thinking-Tag-Filter).
 
@@ -192,71 +193,35 @@ Modul: `ollama.js` – optimiert für **Qwen 3.5** (Temperature, Kontext, Thinki
 
 Beim Start werden Tabellen automatisch angelegt:
 
-- `group_settings` – u. a. **`is_active`** pro Gruppe
+- `group_settings` – u. a. **`is_active`** pro Gruppe
 - `warnings`, `muted_users`, `banned_users`
 - `bad_words`
-- **`mod_logs`** – vollständiges Audit-Log (siehe unten)
-
-### mod_logs (vollständiges Logging)
-
-| Spalte | Beschreibung |
-|--------|--------------|
-| `group_id` | Gruppen-JID oder `SYSTEM` (Bot-weite Events) |
-| `user_id` | Betroffener User / `bot` / `settings` / … |
-| `actor_id` | Wer die Aktion ausgelöst hat (Admin oder `system`) |
-| `action` | z. B. `WARN`, `BAN`, `BOT_ON`, `TOGGLE`, `JOIN`, `CONNECTED`, … |
-| `reason` | Freier Text |
-| `details` | JSON mit Zusatzinfos (optional) |
-| `created_at` | Zeitstempel |
-
-**Geloggte Aktionen (Auszug):**
-
-- Moderations: `WARN`, `WARN_MAX_ADMIN`, `KICK`, `MUTE`, `UNMUTE`, `BAN`, `UNBAN`, `BAN_REKICK`, `MUTE_DELETE`
-- Admin: `BOT_ON`/`BOT_OFF`, `TOGGLE`, `MAXWARNS`, `SET_WELCOME`/`SET_LEAVE`, `LOCK`/`UNLOCK`, `ADD_WORD`/`DEL_WORD`, `COMMAND`
-- Gruppe: `JOIN`, `LEAVE`, `WELCOME_SENT`, `LEAVE_MSG_SENT`
-- System: `BOT_START`, `CONNECTED`, `DISCONNECTED`, `LOGGED_OUT`, `ERROR`
-
-Beispiel-Abfragen:
-
-```sql
--- Letzte 50 Aktionen einer Gruppe
-SELECT * FROM mod_logs WHERE group_id = '120363...@g.us' ORDER BY id DESC LIMIT 50;
-
--- Alle Bans der letzten 7 Tage
-SELECT * FROM mod_logs WHERE action = 'BAN' AND created_at > DATE_SUB(NOW(), INTERVAL 7 DAY);
-
--- System-Events
-SELECT * FROM mod_logs WHERE group_id = 'SYSTEM' ORDER BY id DESC LIMIT 20;
-```
+- **`mod_logs`** – vollständiges Audit-Log
+- `bot_config` – globale Laufzeit-Config
+- `ki_chat_memory`, `ki_members` – KI-Memory & Namen
 
 ### Wichtig: `is_active` nach Reboot
 
-Der Status **`!bot on`** liegt **nur in MySQL**. Wenn er nach einem Neustart weg ist, liegt es fast immer an der Datenbank:
-
-1. **MySQL-Daten müssen persistent sein** (Volume / externer DB-Server).  
-   Läuft MySQL *im selben Container* ohne Volume, ist die DB nach jedem Rebuild leer → alle Gruppen wieder inaktiv.
-2. Prüfen:
-   ```sql
-   SELECT group_id, is_active FROM group_settings;
-   ```
-3. Nach dem Start erneut `!bot on` setzen, wenn die DB neu war.
-4. `!bot` zeigt den aktuellen Status und die Group-ID.
-
-Der Bot speichert `is_active` per **UPSERT** und überschreibt bestehende Werte beim normalen Start **nicht**.
+Der Status **`!bot on`** liegt **nur in MySQL**. MySQL-Daten müssen persistent sein (Volume / externer DB-Server).
 
 ---
 
-## Hosting / Panel (Pterodactyl o. Ä.)
+## Änderungen in v3.4.0
 
-- **Startbefehl:** `node app.js` (ESM, kein `tsx` nötig)
-- **Hauptfile:** `app.js`
-- `NODE_PACKAGES` leer lassen – Dependencies kommen aus `package.json`
-- **Kein Chrome/Puppeteer** nötig
-- Volumes persistent halten:
-  - `auth_baileys/` (Login)
-  - MySQL-Datenverzeichnis **oder** externe DB
+- Settings-Cache (`settings_cache_ttl_ms`) – weniger DB-Last pro Nachricht
+- Exponentielles Reconnect-Backoff (`reconnect_base_ms` / `reconnect_max_ms`)
+- Fallback-Schimpfwörter, wenn Remote-Liste offline ist
+- Bugfix: `!setleave` aktiviert nicht mehr fälschlich Welcome
+- Spam-Map-Cleanup gegen Memory-Wachstum
+- README an MySQL-KI-Memory angepasst
+- Versionsnummern vereinheitlicht
 
-`git pull` + `npm install` nach Updates.
+---
+
+## Hosting / Panel (Pterodactyl o. Ä.)
+
+- **Startbefehl:** `node app.js`
+- Volumes: `auth_baileys/` + MySQL persistent
 
 ---
 
@@ -264,12 +229,12 @@ Der Bot speichert `is_active` per **UPSERT** und überschreibt bestehende Werte 
 
 ```text
 app.js           # Bot (Baileys + Moderation + Logging + KI-Anbindung)
-ollama.js        # Modulares Ollama-KI-Modul (!ki)
-profanity.js     # Schimpfwort-Erkennung
+config.js        # bot_config (MySQL Key/Value)
+ollama.js        # Ollama-KI-Modul (!ki, Memory, Profanity-KI)
+profanity.js     # Klassische Schimpfwort-Erkennung
 package.json     # Dependencies (ESM)
 .env             # Geheimnisse (nicht committen)
 auth_baileys/    # WhatsApp-Session (nicht committen)
-ki_memory/       # Persistentes KI-Conversation-Memory (nicht committen)
 ```
 
 ---
@@ -279,11 +244,12 @@ ki_memory/       # Persistentes KI-Conversation-Memory (nicht committen)
 | Problem | Lösung |
 |--------|--------|
 | Keine Nachrichten | Neu koppeln (`rm -rf auth_baileys`), Bot-Logs prüfen |
-| `is_active` weg nach Reboot | MySQL-Persistenz prüfen (siehe oben) |
+| `is_active` weg nach Reboot | MySQL-Persistenz prüfen |
 | Kick/Ban/Löschen geht nicht | Bot muss **Gruppen-Admin** sein |
 | Pairing-Code | `PHONE_NUMBER` ohne `+` und Leerzeichen |
 | Module not found | `rm -rf node_modules && npm install` |
 | ESM-Fehler | Node ≥ 18, Start mit `node app.js` |
+| Ollama langsam / Timeout | Kleineres Modell oder `!setconfig ki_timeout_ms 120000` |
 
 ---
 
@@ -292,7 +258,6 @@ ki_memory/       # Persistentes KI-Conversation-Memory (nicht committen)
 - `.env` und `auth_baileys/` **nie** ins Git committen
 - Bot-Nummer und DB-Zugangsdaten geheim halten
 - Nur vertrauenswürdige Admins in der Gruppe
-- Logs enthalten ggf. User-IDs und kurze Nachrichten-Snippets – DB-Zugriff einschränken
 
 ---
 
