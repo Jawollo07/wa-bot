@@ -13,3 +13,4 @@ logs/
 coverage/
 .DS_Store
 npm-debug.log*
+.runtime-app.js
