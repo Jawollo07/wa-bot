@@ -3,8 +3,8 @@ import legacyHandler from './legacy.js';
 /**
  * Central command registry.
  *
- * Each domain owns its command names. The current implementation is kept behind
- * the adapter so commands can be migrated one-by-one without changing the bot.
+ * Domain modules own command names. The legacy implementation remains behind
+ * this boundary so no existing command silently disappears during migration.
  */
 const COMMAND_GROUPS = Object.freeze({
     admin: new Set(['bot', 'ping', 'info', 'stats', 'logs', 'setconfig', 'config', 'help']),
@@ -34,22 +34,19 @@ export function isRegisteredCommand(commandName) {
     return getCommandGroup(commandName) !== null;
 }
 
-/**
- * Execute a registered command through its current implementation.
- * Unknown commands are deliberately not consumed.
- */
 export async function dispatchCommand(context) {
-    const { text, prefix } = context;
-    const commandName = getCommandName(text, prefix);
-    if (!commandName || !isRegisteredCommand(commandName)) return false;
+    const commandName = getCommandName(context.text, context.prefix);
+    if (!commandName) return false;
 
+    // Known commands are now categorized by domain. Unknown commands still
+    // reach the legacy handler for backwards compatibility during migration.
     return Boolean(await legacyHandler(
         context.msg,
         context.meta,
         context.settings,
         context.groupId,
         context.senderId,
-        text
+        context.text
     ));
 }
 
