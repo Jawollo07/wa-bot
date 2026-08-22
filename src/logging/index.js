@@ -1,2 +1,4 @@
 /** Central logging boundary. */
-export { default as log, logAction } from '../../logging.js';
+import log, { logAction } from '../../logging.js';
+export { log, logAction };
+export default log;
