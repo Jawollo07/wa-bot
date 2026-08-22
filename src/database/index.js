@@ -1,2 +1,4 @@
-/** Database boundary. SQL implementation remains isolated behind this module. */
-export { default as initDatabase, dbPool, getGroupSettings, ensureColumn } from '../../db.js';
+/** Database boundary. */
+import initDatabase, { dbPool, getGroupSettings, ensureColumn } from '../../db.js';
+export { initDatabase, dbPool, getGroupSettings, ensureColumn };
+export default initDatabase;
