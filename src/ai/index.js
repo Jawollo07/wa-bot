@@ -1,9 +1,4 @@
-/** AI boundary. */
-export {
-  handleKiCommand,
-  checkOllama,
-  getKiConfig,
-  applyKiConfig,
-  initKiDb,
-  checkProfanityWithKi
-} from '../../ollama.js';
+/**
+ * @deprecated Compatibility alias. Use src/ki instead.
+ */
+export * from '../ki/index.js';
