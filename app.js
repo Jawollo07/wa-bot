@@ -1,26 +1,14 @@
 import 'dotenv/config';
-import initDatabase from './db.js';
-import handleAdminCommands from './commands.js';
-import log from './logging.js';
-import logAction from './logging.js';
-import startSocket from './socket.js';
-function isJidGroup(jid) {
-    return typeof jid === 'string' && jid.endsWith('@g.us');
-}
-function jidNormalizedUser(jid) {
-    if (!jid) return '';
-    return String(jid).split(':')[0];
-}
-
 import mysql from 'mysql2/promise';
-import pino from 'pino';
-import qrcode from 'qrcode-terminal';
-import { Boom } from '@hapi/boom';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import * as profanity from './profanity.js';
-import { handleKiCommand, checkOllama, getKiConfig, applyKiConfig, initKiDb, checkProfanityWithKi } from './ollama.js';
+import initDatabase from './src/database/index.js';
+import handleAdminCommands from './src/commands/index.js';
+import log, { logAction } from './src/logging/index.js';
+import startSocket from './src/bot/index.js';
+import * as profanity from './src/moderation/index.js';
+import { handleKiCommand, checkOllama, getKiConfig, applyKiConfig, initKiDb, checkProfanityWithKi } from './src/ai/index.js';
 import {
     initBotConfig,
     reloadBotConfig,
@@ -37,12 +25,11 @@ import {
     formatConfigList,
     isKnownConfigKey,
     CONFIG_DEFAULTS
-} from './config.js';
+} from './src/config/runtime.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SYSTEM_GROUP = 'SYSTEM';
 
-/** Nur DB-Zugang bleibt in .env – Rest in MySQL bot_config */
 export const CONFIG = {
     db: {
         host: process.env.DB_HOST,
@@ -71,29 +58,21 @@ export const CONFIG = {
     ]
 };
 
-function PREFIX() {
-    return getPrefix();
-}
-function AUTH_DIR() {
-    return getAuthDir();
-}
+function PREFIX() { return getPrefix(); }
+function AUTH_DIR() { return getAuthDir(); }
 
 let dbPool;
-let sock = null;
 let loadedBadWords = [];
 const messageTimestamps = new Map();
 const groupMetaCache = new Map();
 const GROUP_CACHE_TTL = 60_000;
 let botStartTime = Date.now();
 let stats = { messages: 0, violations: 0, commands: 0 };
-let pairingRequested = false;
 
 process.on('unhandledRejection', (r) => console.error('[unhandledRejection]', r));
 process.on('uncaughtException', (e) => console.error('[uncaughtException]', e));
 
-function normalizePhone(id) {
-    return String(id || '').replace(/\D/g, '');
-}
+function normalizePhone(id) { return String(id || '').replace(/\D/g, ''); }
 function isBotOwner(senderId) {
     if (!senderId) return false;
     const num = normalizePhone(senderId);
@@ -103,21 +82,12 @@ function isBotOwner(senderId) {
         return num === owner || num.endsWith(owner) || owner.endsWith(num);
     });
 }
-
+function jidNormalizedUser(jid) { return jid ? String(jid).split(':')[0] : ''; }
+function isJidGroup(jid) { return typeof jid === 'string' && jid.endsWith('@g.us'); }
 function extractText(msg) {
     const m = msg.message || {};
-    return (
-        m.conversation ||
-        m.extendedTextMessage?.text ||
-        m.imageMessage?.caption ||
-        m.videoMessage?.caption ||
-        m.documentMessage?.caption ||
-        m.buttonsResponseMessage?.selectedDisplayText ||
-        m.listResponseMessage?.title ||
-        ''
-    );
+    return m.conversation || m.extendedTextMessage?.text || m.imageMessage?.caption || m.videoMessage?.caption || m.documentMessage?.caption || m.buttonsResponseMessage?.selectedDisplayText || m.listResponseMessage?.title || '';
 }
-
 function detectMsgType(msg) {
     const m = msg.message || {};
     if (m.stickerMessage) return 'sticker';
@@ -133,7 +103,7 @@ async function getGroupMeta(groupId) {
     const cached = groupMetaCache.get(groupId);
     if (cached && Date.now() - cached.ts < GROUP_CACHE_TTL) return cached.meta;
     try {
-        const meta = await sock.groupMetadata(groupId);
+        const meta = await globalThis.__waBotSocket?.groupMetadata(groupId);
         groupMetaCache.set(groupId, { meta, ts: Date.now() });
         return meta;
     } catch (e) {
@@ -141,7 +111,6 @@ async function getGroupMeta(groupId) {
         return cached?.meta || null;
     }
 }
-
 function isParticipantAdmin(meta, userId) {
     if (!meta?.participants || !userId) return false;
     const uid = jidNormalizedUser(userId);
@@ -150,8 +119,7 @@ function isParticipantAdmin(meta, userId) {
         const lid = x.lid ? jidNormalizedUser(x.lid) : '';
         return id === uid || lid === uid || normalizePhone(id) === normalizePhone(uid);
     });
-    if (!p) return false;
-    return p.admin === 'admin' || p.admin === 'superadmin' || p.isAdmin || p.isSuperAdmin;
+    return !!p && (p.admin === 'admin' || p.admin === 'superadmin' || p.isAdmin || p.isSuperAdmin);
 }
 
 async function syncAndLoadBadWords() {
@@ -162,13 +130,11 @@ async function syncAndLoadBadWords() {
             const response = await fetch(url);
             if (!response.ok) continue;
             const data = await response.json();
-            let rawWords = Array.isArray(data) ? data : (typeof data === 'object' ? Object.values(data).flat() : []);
-            for (const word of rawWords) {
-                if (typeof word === 'string' && word.trim().length > 1) wordsSet.add(word.trim().toLowerCase());
-            }
+            const rawWords = Array.isArray(data) ? data : (typeof data === 'object' ? Object.values(data).flat() : []);
+            for (const word of rawWords) if (typeof word === 'string' && word.trim().length > 1) wordsSet.add(word.trim().toLowerCase());
         } catch (_) {}
     }
-    if (wordsSet.size > 0) {
+    if (wordsSet.size) {
         const connection = await dbPool.getConnection();
         try {
             await connection.beginTransaction();
@@ -179,14 +145,12 @@ async function syncAndLoadBadWords() {
     }
     await reloadBadWordsCache();
 }
-
 async function reloadBadWordsCache() {
     const [rows] = await dbPool.query('SELECT word FROM bad_words');
     loadedBadWords = rows.map(r => r.word);
     profanity.setWordList(loadedBadWords);
     log('✅ ' + loadedBadWords.length + ' Schimpfwörter geladen (Index: ' + profanity.getIndexSize() + ' Formen).');
 }
-
 function dbFlag(v, defaultVal = false) {
     if (v === undefined || v === null) return defaultVal;
     if (typeof v === 'boolean') return v;
@@ -195,22 +159,14 @@ function dbFlag(v, defaultVal = false) {
     if (typeof Buffer !== 'undefined' && Buffer.isBuffer(v)) return v[0] === 1;
     return Boolean(v);
 }
-
 export default function mapSettingsRow(r) {
     return {
         groupId: r.group_id,
-        isActive: dbFlag(r.is_active, false),
-        allowLinks: dbFlag(r.allow_links, false),
-        allowStickers: dbFlag(r.allow_stickers, false),
-        allowImages: dbFlag(r.allow_images, true),
-        allowVideos: dbFlag(r.allow_videos, true),
-        allowAudios: dbFlag(r.allow_audios, true),
-        antiSpam: dbFlag(r.anti_spam, true),
-        maxWarnings: r.max_warnings != null ? Number(r.max_warnings) : CONFIG.defaultSettings.maxWarnings,
-        welcomeActive: dbFlag(r.welcome_active, false),
-        allowKi: dbFlag(r.allow_ki, true),
-        welcomeMsg: r.welcome_msg || CONFIG.defaultSettings.welcomeMsg,
-        leaveMsg: r.leave_msg || CONFIG.defaultSettings.leaveMsg
+        isActive: dbFlag(r.is_active, false), allowLinks: dbFlag(r.allow_links, false), allowStickers: dbFlag(r.allow_stickers, false),
+        allowImages: dbFlag(r.allow_images, true), allowVideos: dbFlag(r.allow_videos, true), allowAudios: dbFlag(r.allow_audios, true),
+        antiSpam: dbFlag(r.anti_spam, true), maxWarnings: r.max_warnings != null ? Number(r.max_warnings) : CONFIG.defaultSettings.maxWarnings,
+        welcomeActive: dbFlag(r.welcome_active, false), allowKi: dbFlag(r.allow_ki, true),
+        welcomeMsg: r.welcome_msg || CONFIG.defaultSettings.welcomeMsg, leaveMsg: r.leave_msg || CONFIG.defaultSettings.leaveMsg
     };
 }
 
@@ -222,31 +178,18 @@ async function startBot() {
         applyKiConfig(getKiSettingsFromDb());
         await initKiDb(dbPool);
         log('⚙️ Config aus MySQL (bot_config) · KI-Memory in DB · Prefix: ' + PREFIX());
-        log('🔤 Hybrid-Schimpfwörter: klassisch' + (getConfigBool('ki_profanity_enabled', true) ? ' + KI' : ' (KI aus)') );
         await logAction(SYSTEM_GROUP, 'bot', 'BOT_START', 'Bot startet', 'system');
         await syncAndLoadBadWords();
-
         const kiCfg = getKiConfig();
         if (kiCfg.enabled) {
             const info = await checkOllama();
-            if (info.ok) {
-                log('🤖 Ollama OK – Host: ' + info.host + ' | Modell: ' + info.model +
-                    (info.hasModel ? '' : ' ⚠️ Modell nicht gefunden') +
-                    ' | Verfügbar: ' + (info.models.slice(0, 5).join(', ') || '–'));
-            } else {
-                log('⚠️ Ollama nicht erreichbar (' + info.host + '): ' + (info.error || 'offline') +
-                    ' – !ki und KI-Profanity warten bis Ollama läuft');
-            }
-        } else {
-            log('🤖 KI deaktiviert (bot_config: ki_enabled=false)');
+            if (info.ok) log('🤖 Ollama OK – Host: ' + info.host + ' | Modell: ' + info.model);
+            else log('⚠️ Ollama nicht erreichbar (' + info.host + '): ' + (info.error || 'offline'));
         }
-
         await startSocket();
     } catch (err) {
         console.error('❌ Start fehlgeschlagen:', err);
-        try {
-            await logAction(SYSTEM_GROUP, 'bot', 'BOT_START_FAIL', err.message || String(err), 'system');
-        } catch (_) {}
+        try { await logAction(SYSTEM_GROUP, 'bot', 'BOT_START_FAIL', err.message || String(err), 'system'); } catch (_) {}
         process.exit(1);
     }
 }
