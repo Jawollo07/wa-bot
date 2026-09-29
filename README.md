@@ -112,3 +112,27 @@ src/bot/ — WhatsApp/Baileys-Transport
 Die Root-Dateien commands.js, mod_actions.js, messageHandler.js, db.js und logging.js werden schrittweise aus der globalen Service-Schicht entfernt oder auf minimale Kompatibilitätsadapter reduziert.
 
 Der Umbau erfolgt auf einem separaten Branch, damit master unverändert bleibt.
+
+
+## Modulare Architektur
+
+Die Anwendung ist vollständig unter `src/` organisiert. `app.js` ist nur noch der Bootstrap.
+
+```
+src/
+├── bot/             # Baileys Transport + Message Pipeline
+├── commands/        # Command Registry und Domain-Handler
+├── config/          # Bootstrap- und Runtime-Konfiguration
+├── core/            # Runtime, Logger, Utility-Funktionen
+├── database/        # MySQL-Verbindung und Datenbankzugriff
+├── ki/              # Ollama/KI
+├── logging/         # Persistentes Moderations-Logging
+├── moderation/      # Wortfilter und Moderations-Lifecycle
+└── services/
+    ├── moderation/  # Warnungen, Bans, Mutes, Spam, Violations
+    ├── group-service.js
+    ├── message-service.js
+    └── permission-service.js
+```
+
+Root-Level-Implementierungen wie `commands.js`, `db.js`, `logging.js`, `messageHandler.js`, `socket.js`, `config.js`, `profanity.js` und `ollama.js` wurden entfernt. Neue Funktionen sollen ausschließlich über die jeweiligen `src/`-Boundaries importiert werden.
