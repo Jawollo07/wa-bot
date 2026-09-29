@@ -1,3 +1,33 @@
+import { dbPool, getGroupSettings } from './db.js';
+import { getRuntimeSocket, getStats, getStartedAt } from './src/core/runtime.js';
+import { getPrefix, getConfigBool, getConfig, getConfigInt, setConfig, reloadBotConfig, getKiSettingsFromDb, formatConfigList, isKnownConfigKey, CONFIG_DEFAULTS } from './src/config/runtime.js';
+import { isParticipantAdmin, normalizePhone, parseMentions } from './src/core/utils.js';
+import { isBotOwner } from './src/services/permission-service.js';
+import { sendText } from './src/services/message-service.js';
+import log, { logAction } from './logging.js';
+import { getKiConfig, applyKiConfig } from './src/ki/index.js';
+import * as profanity from './profanity.js';
+
+const SYSTEM_GROUP = 'SYSTEM';
+const stats = getStats();
+const sock = new Proxy({}, {
+  get(_target, property) {
+    const current = getRuntimeSocket();
+    const value = current?.[property];
+    return typeof value === 'function' ? value.bind(current) : value;
+  }
+});
+const PREFIX = () => getPrefix();
+const botStartTime = getStartedAt();
+let loadedBadWords = [];
+
+async function reloadBadWordsCache() {
+  if (!dbPool) return;
+  const [rows] = await dbPool.query('SELECT word FROM bad_words');
+  loadedBadWords = rows.map((row) => row.word);
+  profanity.setWordList(loadedBadWords);
+}
+
 export default async function handleAdminCommands(msg, meta, settings, groupId, senderId, text) {
     const args = text.trim().split(/\s+/);
     const command = args[0].toLowerCase();
