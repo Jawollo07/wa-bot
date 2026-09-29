@@ -1,4 +1,4 @@
-import { dbPool } from './db.js';
+import { dbPool } from '../database/mysql.js';
 
 import log from './src/core/logger.js';
 
