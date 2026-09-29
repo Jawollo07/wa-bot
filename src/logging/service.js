@@ -1,6 +1,6 @@
 import { dbPool } from '../database/mysql.js';
 
-import log from './src/core/logger.js';
+import log from '../core/logger.js';
 
 export { log };
 export default log;
