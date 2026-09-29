@@ -1,6 +1,6 @@
 import mysql from 'mysql2/promise';
 import { CONFIG } from '../config/app.js';
-import log from './src/core/logger.js';
+import log from '../core/logger.js';
 let dbPool;
 export { dbPool };
 export default async function initDatabase() {
