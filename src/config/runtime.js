@@ -15,4 +15,4 @@ export {
   getKiSettingsFromDb,
   formatConfigList,
   isKnownConfigKey
-} from '../../config.js';
+} from './index.js';
