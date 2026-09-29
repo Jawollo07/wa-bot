@@ -1,9 +1,9 @@
 import { dbPool } from './db.js';
 
-export default function log(...args) {
-  const t = new Date().toISOString().slice(11, 19);
-  console.log('[' + t + ']', ...args);
-}
+import log from './src/core/logger.js';
+
+export { log };
+export default log;
 
 export async function logAction(groupId, userId, action, reason = null, actorId = null, details = null) {
   try {
