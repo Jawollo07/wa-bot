@@ -1,4 +1,4 @@
-# wa-bot v3.7.0 (Baileys)
+# wa-bot v3.8.0 (Baileys)
 
 WhatsApp-**Moderations-Bot** auf Basis von Baileys, MySQL und optional Ollama.
 
@@ -81,9 +81,28 @@ Der Bot verarbeitet automatisch jede WhatsApp-Gruppe, in der sein Konto Mitglied
 - Ein Bot kann nicht selbst einer Gruppe beitreten; er muss Mitglied der jeweiligen Gruppe sein.
 - `bot off` bleibt als bewusste manuelle Deaktivierung erhalten und verhindert die automatische Reaktivierung.
 
-## Release 3.7.0
+## Community-Regelungen
 
-Die 3.7.0-Version erweitert die modulare Architektur:
+Community-Admins können eine gemeinsame Moderationsregelung für die gesamte WhatsApp Community setzen. Unterstützt werden Links, Sticker, Bilder, Videos, Audios, Anti-Spam, KI und maximale Verwarnungen.
+
+Beispiele:
+
+```text
+!community settings
+!community links off
+!community antispam on
+!community maxwarns 5
+!community on
+!community off
+!community override on
+!community override off
+```
+
+Die Werte werden an alle zugehörigen Gruppen vererbt. `community override on` nimmt eine einzelne Untergruppe aus der Vererbung heraus; mit `override off` übernimmt sie wieder die Community-Regelung. Nicht gesetzte Community-Werte bleiben beim jeweiligen Gruppenwert. Änderungen an der Community-Regelung sind nur für Community-Admins erlaubt.
+
+## Release 3.8.0
+
+Die 3.8.0-Version erweitert die modulare Architektur:
 
 - Root-Level-Implementierungen wurden entfernt.
 - Command-, Moderations-, Datenbank-, Logging-, KI- und Bot-Logik sind über klare `src/`-Boundaries organisiert.
