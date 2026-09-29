@@ -195,7 +195,7 @@ export function getPrefix() {
 
 export function getAuthDir() {
   const p = getConfig('baileys_auth_path', './auth_baileys') || './auth_baileys';
-  return path.isAbsolute(p) ? p : path.join(__dirname, p);
+  return path.isAbsolute(p) ? p : path.join(__dirname, '../..', p);
 }
 
 export function getPhoneNumber() {
