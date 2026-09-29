@@ -1,11 +1,23 @@
-import dispatchCommand from './registry.js';
+import { sendText, removeParticipant } from '../services/message-service.js';
+import { isParticipantAdmin } from '../core/utils.js';
+import { isBotOwner } from '../services/permission-service.js';
+import { logAction } from '../logging/index.js';
+import { addWarning,getWarningCount,resetWarnings,clearWarnings,mute,unmute,listMuted } from '../services/moderation/index.js';
+import { banUser,unbanUser,getActiveBan,parseBanDuration,formatBanUntil } from '../services/moderation/bans.js';
+import { dbPool } from '../database/index.js';
+import * as profanity from '../../profanity.js';
 
-export const MODERATION_COMMANDS = Object.freeze([
-    'mute', 'unmute', 'muted',
-    'warn', 'warnings', 'unwarn', 'clearwarns',
-    'kick', 'ban', 'unban', 'banned'
-]);
+export const MODERATION_COMMANDS=Object.freeze(['mute','unmute','muted','ban','unban','banned','kick','warns','warnings','resetwarns','unwarn','clearwarns','addword','delword']);
 
-export function dispatchModerationCommand(context) {
-    return dispatchCommand(context);
+export async function dispatchModerationCommand(c){
+ const {command,args,groupId,senderId,meta,settings,prefix,mentions}=c, reply=(t,m=[])=>sendText(groupId,t,m), target=mentions?.[0];
+ if(['mute','unmute'].includes(command)){if(!target){await reply('⚠️ Nutzung: '+prefix+command+' @User');return true;}if(command==='mute'&&(isParticipantAdmin(meta,target)||isBotOwner(target))){await reply('⚠️ Admins/Owner können nicht stummgeschaltet werden.');return true;}if(command==='mute')await mute(groupId,target);else await unmute(groupId,target);await logAction(groupId,target,command.toUpperCase(),'Manuell',senderId);await reply(command==='mute'?'🤫 User stummgeschaltet.':'🔊 User darf wieder schreiben.',[target]);return true;}
+ if(command==='muted'){const users=await listMuted(groupId);await reply(users.length?'📋 *Stummgeschaltet ('+users.length+')*:\n'+users.map(x=>'• '+x.split('@')[0]).join('\n'):'📋 Niemand ist stummgeschaltet.');return true;}
+ if(['warns','warnings','resetwarns','unwarn'].includes(command)){if(!target){await reply('⚠️ Nutzung: '+prefix+command+' @User');return true;}if(command==='resetwarns'||command==='unwarn'){await resetWarnings(groupId,target);await logAction(groupId,target,'RESET_WARNS','Manuell',senderId);await reply('✅ Verwarnungen zurückgesetzt.',[target]);}else await reply('⚠️ Verwarnungen: *'+await getWarningCount(groupId,target)+'/'+settings.maxWarnings+'*',[target]);return true;}
+ if(command==='clearwarns'){await clearWarnings(groupId);await reply('✅ Alle Verwarnungen dieser Gruppe gelöscht.');return true;}
+ if(command==='kick'){if(!target){await reply('⚠️ Nutzung: '+prefix+'kick @User');return true;}if(isParticipantAdmin(meta,target)||isBotOwner(target)){await reply('⚠️ Admins/Owner können nicht gekickt werden.');return true;}try{await removeParticipant(groupId,target);await logAction(groupId,target,'KICK','Manueller Kick',senderId);await reply('👢 User entfernt.',[target]);}catch(e){await reply('❌ Kick fehlgeschlagen: '+(e.message||e));}return true;}
+ if(['ban','unban'].includes(command)){if(!target){await reply('⚠️ Nutzung: '+prefix+command+' @User [Dauer] [Grund]');return true;}if(command==='unban'){await unbanUser(groupId,target);await logAction(groupId,target,'UNBAN','Manuell',senderId);await reply('✅ Ban aufgehoben.',[target]);return true;}if(isParticipantAdmin(meta,target)||isBotOwner(target)){await reply('⚠️ Admins/Owner können nicht gebannt werden.');return true;}let duration=null,reason=[];for(const a of args.slice(1)){const parsed=parseBanDuration(a);if(!duration&&parsed){duration=a;continue;}if(!a.startsWith('@'))reason.push(a);}const parsed=parseBanDuration(duration);if(duration&&!parsed){await reply('⚠️ Ungültige Dauer.');return true;}const until=parsed?.until?.toISOString().slice(0,19).replace('T',' ')||null,label=parsed?.label||'permanent',why=reason.join(' ').trim()||'Manueller Ban';await banUser(groupId,target,until,why,senderId);try{await removeParticipant(groupId,target);}catch{}await logAction(groupId,target,'BAN',why,senderId,{duration:label,until});await reply('🚫 User gebannt ('+label+').\nGrund: '+why,[target]);return true;}
+ if(command==='banned'){const [rows]=await dbPool.query('SELECT user_id,banned_until,reason FROM banned_users WHERE group_id=? ORDER BY banned_at DESC LIMIT 30',[groupId]);const active=[];for(const row of rows){if(!row.banned_until||new Date(row.banned_until)>new Date())active.push(row);}await reply(active.length?'📋 *Gebannt ('+active.length+')*:\n'+active.map(r=>'• '+r.user_id.split('@')[0]+' – '+formatBanUntil(r)+(r.reason?' ('+r.reason+')':'')).join('\n'):'📋 Niemand ist gebannt.');return true;}
+ if(command==='addword'||command==='delword'){const word=args.slice(1).join(' ').toLowerCase().trim();if(!word){await reply('⚠️ Wort fehlt.');return true;}if(command==='addword')await dbPool.query('INSERT IGNORE INTO bad_words (word) VALUES (?)',[word]);else await dbPool.query('DELETE FROM bad_words WHERE word=?',[word]);await profanity.reload?.();await reply('✅ Schimpfwort '+(command==='addword'?'hinzugefügt':'entfernt')+'.');return true;}
+ return false;
 }

@@ -195,7 +195,7 @@ export function getPrefix() {
 
 export function getAuthDir() {
   const p = getConfig('baileys_auth_path', './auth_baileys') || './auth_baileys';
-  return path.isAbsolute(p) ? p : path.join(__dirname, p);
+  return path.isAbsolute(p) ? p : path.join(__dirname, '../..', p);
 }
 
 export function getPhoneNumber() {
@@ -233,7 +233,7 @@ export function getKiSettingsFromDb() {
     rateLimitMs: getConfigInt('ki_rate_limit_ms', 2500),
     memoryFolder: (() => {
       const p = getConfig('ki_memory_path', './ki_memory') || './ki_memory';
-      return path.isAbsolute(p) ? p : path.join(__dirname, p);
+      return path.isAbsolute(p) ? p : path.join(__dirname, '../..', p);
     })(),
     temperature: getConfigFloat('ki_temperature', 0.7),
     topP: getConfigFloat('ki_top_p', 0.9),

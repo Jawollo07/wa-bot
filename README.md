@@ -81,3 +81,58 @@ Die nächste Refactoring-Stufe kann die großen Implementierungsdateien weiter z
 - `db.js` → Repositories und Migrationen
 
 Dabei sollen die bestehenden Commands und Datenbankschemata unverändert funktionieren.
+
+
+## Modulare Architektur
+
+Der Branch refactor/modular-architecture führt eine Service-/Runtime-Schicht ein. Die bisherige globale Kopplung wird schrittweise abgebaut.
+
+Struktur:
+
+src/core/ — Runtime, Application Context, Utilities und Logger
+src/services/ — Gruppen, Nachrichten, Berechtigungen und Moderation
+src/database/ — Datenbank-Boundary und Verbindung
+src/commands/ — Command Context, Registry und Domain-Commands
+src/ai/ — KI-Integration
+src/moderation/ — Moderationslogik
+src/bot/ — WhatsApp/Baileys-Transport
+
+### Architekturregeln
+
+- WhatsApp/Baileys-Zugriff läuft über den Runtime-Socket bzw. den Message Service.
+- Datenbankzugriff läuft über die Database Boundary.
+- Moderation kennt keine WhatsApp-Verbindungsdetails.
+- Gruppen-Metadaten und Cache liegen im Group Service.
+- Berechtigungsprüfungen liegen im Permission Service.
+- Der Message Handler orchestriert die Pipeline.
+- Legacy-Code bleibt während der Migration hinter klaren Grenzen und wird schrittweise entfernt.
+
+### Migrationsziel
+
+Die Root-Dateien commands.js, mod_actions.js, messageHandler.js, db.js und logging.js werden schrittweise aus der globalen Service-Schicht entfernt oder auf minimale Kompatibilitätsadapter reduziert.
+
+Der Umbau erfolgt auf einem separaten Branch, damit master unverändert bleibt.
+
+
+## Modulare Architektur
+
+Die Anwendung ist vollständig unter `src/` organisiert. `app.js` ist nur noch der Bootstrap.
+
+```
+src/
+├── bot/             # Baileys Transport + Message Pipeline
+├── commands/        # Command Registry und Domain-Handler
+├── config/          # Bootstrap- und Runtime-Konfiguration
+├── core/            # Runtime, Logger, Utility-Funktionen
+├── database/        # MySQL-Verbindung und Datenbankzugriff
+├── ki/              # Ollama/KI
+├── logging/         # Persistentes Moderations-Logging
+├── moderation/      # Wortfilter und Moderations-Lifecycle
+└── services/
+    ├── moderation/  # Warnungen, Bans, Mutes, Spam, Violations
+    ├── group-service.js
+    ├── message-service.js
+    └── permission-service.js
+```
+
+Root-Level-Implementierungen wie `commands.js`, `db.js`, `logging.js`, `messageHandler.js`, `socket.js`, `config.js`, `profanity.js` und `ollama.js` wurden entfernt. Neue Funktionen sollen ausschließlich über die jeweiligen `src/`-Boundaries importiert werden.
