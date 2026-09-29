@@ -9,7 +9,7 @@ export const CONFIG = {
     connectionLimit: Number(process.env.DB_POOL_SIZE) || 10
   },
   defaultSettings: {
-    isActive: false,
+    isActive: true,
     maxWarnings: 3,
     allowLinks: false,
     allowStickers: false,
