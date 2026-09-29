@@ -3,7 +3,7 @@ import mysql from 'mysql2/promise';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import initDatabase from './src/database/index.js';
+import initDatabase from './src/database/connection.js';
 import handleAdminCommands from './src/commands/index.js';
 import log, { logAction } from './src/logging/index.js';
 import startSocket from './src/bot/index.js';
