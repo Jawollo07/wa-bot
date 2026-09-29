@@ -43,8 +43,7 @@ export async function onGroupParticipantsUpdate(update) {
         }
 
         await logAction(groupId, userId, 'JOIN', null, 'system');
-        const context = await getGroupContext(groupId, senderId, getBotOwners());
-    const settings = await getEffectiveGroupSettings(groupId, context.meta);
+        const settings = await getGroupSettings(groupId);
         if (settings.isActive && settings.welcomeActive) {
           const number = normalizePhone(userId) || userId.split('@')[0];
           await sendText(groupId, settings.welcomeMsg.replace(/@user/gi, '@' + number), [userId]);
@@ -98,7 +97,8 @@ export async function onIncomingMessage(msg) {
     incrementStat('messages');
     log('📩 "' + (text || '[' + msgType + ']') + '" from=' + senderId);
 
-    const settings = await getGroupSettings(groupId);
+    const context = await getGroupContext(groupId, senderId, getBotOwners());
+    const settings = await getEffectiveGroupSettings(groupId, context.meta);
     const prefix = getPrefix();
 
     if (context.isAdmin && text.startsWith(prefix)) {
