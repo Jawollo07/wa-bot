@@ -1,15 +1,15 @@
 import { getGroupSettings } from '../database/index.js';
-import { getPrefix, getConfigBool, getConfigInt, getBotOwners } from './src/config/runtime.js';
-import { getStats, incrementStat, getRuntimeSocket } from './src/core/runtime.js';
-import { extractMessageText, detectMessageType, isGroupJid, normalizePhone, parseMentions } from './src/core/utils.js';
-import { getGroupMeta, getGroupContext, invalidateGroup } from './src/services/group-service.js';
-import { isBotOwner } from './src/services/permission-service.js';
-import { sendText } from './src/services/message-service.js';
+import { getPrefix, getConfigBool, getConfigInt, getBotOwners } from '../config/runtime.js';
+import { getStats, incrementStat, getRuntimeSocket } from '../core/runtime.js';
+import { extractMessageText, detectMessageType, isGroupJid, normalizePhone, parseMentions } from '../core/utils.js';
+import { getGroupMeta, getGroupContext, invalidateGroup } from '../services/group-service.js';
+import { isBotOwner } from '../services/permission-service.js';
+import { sendText } from '../services/message-service.js';
 import { getActiveBan, isMuted } from '../services/moderation/index.js';
 import { isSpamming } from '../services/moderation/spam.js';
 import { applyViolation } from '../services/moderation/violations.js';
-import { dispatchCommand } from './src/commands/index.js';
-import { handleKiCommand, checkProfanityWithKi } from './src/ai/index.js';
+import { dispatchCommand } from '../commands/index.js';
+import { handleKiCommand, checkProfanityWithKi } from '../ki/index.js';
 import * as profanity from '../moderation/profanity.js';
 import log, { logAction } from '../logging/index.js';
 
