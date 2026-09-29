@@ -1,13 +1,11 @@
 import { ADMIN_COMMANDS, dispatchAdminCommand } from './admin.js';
 import { GROUP_COMMANDS, dispatchGroupCommand } from './group.js';
 import { MODERATION_COMMANDS, dispatchModerationCommand } from './moderation.js';
-import { AI_COMMANDS, dispatchAiCommand } from './ai.js';
 
 export const COMMAND_GROUPS = Object.freeze({
   admin: new Set(ADMIN_COMMANDS),
   group: new Set(GROUP_COMMANDS),
   moderation: new Set(MODERATION_COMMANDS),
-  ai: new Set(AI_COMMANDS)
 });
 
 export function getCommandName(text,prefix){
@@ -31,5 +29,5 @@ export async function dispatchCommand(context){
   if(group==='ai') return (await import('./ai.js')).dispatchAiCommand(c);
   return false;
 }
-export { ADMIN_COMMANDS, GROUP_COMMANDS, MODERATION_COMMANDS, AI_COMMANDS };
+export { ADMIN_COMMANDS, GROUP_COMMANDS, MODERATION_COMMANDS };
 export default dispatchCommand;
