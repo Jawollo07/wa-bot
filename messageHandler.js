@@ -1,171 +1,212 @@
+import { getGroupSettings } from './src/database/index.js';
+import { getPrefix, getConfigBool, getConfigInt, getBotOwners } from './src/config/runtime.js';
+import { getStats, incrementStat, getRuntimeSocket } from './src/core/runtime.js';
+import { extractMessageText, detectMessageType, isGroupJid, normalizePhone } from './src/core/utils.js';
+import { getGroupMeta, getGroupContext, invalidateGroup } from './src/services/group-service.js';
+import { isBotOwner } from './src/services/permission-service.js';
+import { sendText } from './src/services/message-service.js';
+import { getActiveBan, isMuted, isSpamming, applyViolation } from './src/services/moderation-service.js';
+import { dispatchCommand } from './src/commands/index.js';
+import { handleKiCommand, checkProfanityWithKi } from './src/ai/index.js';
+import * as profanity from './profanity.js';
+import log, { logAction } from './logging.js';
+
+const SYSTEM_GROUP = 'SYSTEM';
+
 export async function onGroupParticipantsUpdate(update) {
-    try {
-        const groupId = update.id;
-        groupMetaCache.delete(groupId);
+  const groupId = update?.id;
+  if (!groupId) return;
 
-        if (update.action === 'add') {
-            for (const userId of update.participants || []) {
-                const ban = await getActiveBan(groupId, userId);
-                if (ban) {
-                    log('🚫 Gebannter User rejoined → Kick: ' + userId);
-                    try {
-                        await sock.groupParticipantsUpdate(groupId, [userId], 'remove');
-                        await logAction(groupId, userId, 'BAN_REKICK', ban.reason || 'Auto-Kick (Ban)', 'system', {
-                            until: formatBanUntil(ban)
-                        });
-                        const num = normalizePhone(userId) || userId.split('@')[0];
-                        await sendText(groupId, '🚫 @' + num + ' ist gebannt und wurde erneut entfernt.\nBis: ' + formatBanUntil(ban), [userId]);
-                    } catch (e) {
-                        console.error('Ban-Rekick fehlgeschlagen:', e.message || e);
-                        await logAction(groupId, userId, 'BAN_REKICK_FAIL', e.message || String(e), 'system');
-                    }
-                    continue;
-                }
-                await logAction(groupId, userId, 'JOIN', null, 'system');
-                const settings = await getGroupSettings(groupId);
-                if (settings.isActive && settings.welcomeActive) {
-                    const num = normalizePhone(userId) || userId.split('@')[0];
-                    const t = settings.welcomeMsg.replace(/@user/gi, '@' + num);
-                    await sendText(groupId, t, [userId]);
-                    await logAction(groupId, userId, 'WELCOME_SENT', null, 'system');
-                }
-            }
-        } else if (update.action === 'remove') {
-            for (const userId of update.participants || []) {
-                await logAction(groupId, userId, 'LEAVE', null, 'system');
-            }
-            const settings = await getGroupSettings(groupId);
-            if (settings.isActive && settings.welcomeActive) {
-                await sendText(groupId, settings.leaveMsg);
-                await logAction(groupId, 'group', 'LEAVE_MSG_SENT', null, 'system');
-            }
+  try {
+    invalidateGroup(groupId);
+
+    if (update.action === 'add') {
+      for (const userId of update.participants || []) {
+        const ban = await getActiveBan(groupId, userId);
+
+        if (ban) {
+          log('🚫 Gebannter User rejoined → Kick: ' + userId);
+          try {
+            const sock = getRuntimeSocket();
+            await sock.groupParticipantsUpdate(groupId, [userId], 'remove');
+            await logAction(groupId, userId, 'BAN_REKICK', ban.reason || 'Auto-Kick (Ban)', 'system', {
+              until: ban.banned_until || null
+            });
+            const number = normalizePhone(userId) || userId.split('@')[0];
+            await sendText(groupId, '🚫 @' + number + ' ist gebannt und wurde erneut entfernt.', [userId]);
+          } catch (error) {
+            await logAction(groupId, userId, 'BAN_REKICK_FAIL', error.message || String(error), 'system');
+          }
+          continue;
         }
-    } catch (e) {
-        console.error('group participants update:', e.message || e);
-        await logAction(update?.id || SYSTEM_GROUP, 'system', 'ERROR', 'group-participants: ' + (e.message || e), 'system');
-    }
-}
-export async function onIncomingMessage(msg) {
-    try {
-        if (!msg?.message || !msg.key) return;
-        if (msg.key.fromMe) return;
-        const groupId = msg.key.remoteJid;
-        if (!groupId || !isJidGroup(groupId)) return;
-        const senderId = msg.key.participant || msg.participant || groupId;
-        const text = extractText(msg);
-        const msgType = detectMsgType(msg);
-        stats.messages++;
-        log('📩 "' + (text || '[' + msgType + ']') + '" from=' + senderId);
+
+        await logAction(groupId, userId, 'JOIN', null, 'system');
         const settings = await getGroupSettings(groupId);
-        const meta = await getGroupMeta(groupId);
-        const ownerHit = isBotOwner(senderId);
-        const adminHit = isParticipantAdmin(meta, senderId);
-        const isAdmin = ownerHit || adminHit;
-        if (isAdmin) log('👤 Rechte: owner=' + ownerHit + ' groupAdmin=' + adminHit + ' sender=' + senderId);
-        if (isAdmin && text.startsWith(PREFIX())) {
-            const handled = await handleAdminCommands(msg, meta, settings, groupId, senderId, text);
-            if (handled) {
-                stats.commands++;
-                log('✅ Admin-Befehl ausgeführt');
-                const cmdName = text.trim().split(/\s+/)[0].toLowerCase();
-                await logAction(groupId, senderId, 'COMMAND', cmdName, senderId);
-                return;
-            }
+        if (settings.isActive && settings.welcomeActive) {
+          const number = normalizePhone(userId) || userId.split('@')[0];
+          await sendText(groupId, settings.welcomeMsg.replace(/@user/gi, '@' + number), [userId]);
+          await logAction(groupId, userId, 'WELCOME_SENT', null, 'system');
         }
-
-        if (text.startsWith(PREFIX())) {
-            const lower = text.trim().toLowerCase();
-            const p = PREFIX();
-            const isKiCmd =
-                lower === p + 'ki' ||
-                lower.startsWith(p + 'ki ') ||
-                lower === p + 'kistatus' ||
-                lower === p + 'resetki' ||
-                lower === p + 'kimembers' ||
-                lower === p + 'resetkimembers';
-
-            if (isKiCmd) {
-                const sub = text.trim().split(/\s+/)[1]?.toLowerCase();
-                const needsActive = !(
-                    lower === p + 'kistatus' ||
-                    lower === p + 'kimembers' ||
-                    (lower.startsWith(p + 'ki ') && (sub === 'status' || sub === 'members'))
-                );
-                if (needsActive && !settings.isActive) {
-                    log('🔴 KI-Befehl ignoriert – Bot inaktiv (group=' + groupId + ')');
-                    return;
-                }
-                const pushName = msg.pushName || 'User';
-                const handled = await handleKiCommand(sock, msg, groupId, senderId, text, pushName, {
-                    allowKi: settings.allowKi !== false,
-                    prefix: PREFIX()
-                });
-                if (handled) {
-                    stats.commands++;
-                    log('✅ KI-Befehl ausgeführt');
-                    const cmdName = text.trim().split(/\s+/)[0].toLowerCase();
-                    await logAction(groupId, senderId, 'COMMAND', cmdName, senderId);
-                    return;
-                }
-            }
-        }
-
-        if (!settings.isActive) {
-            log('🔴 Bot inaktiv (group=' + groupId + ')');
-            return;
-        }
-        if (await isMuted(groupId, senderId)) {
-            await safeDeleteMessage(groupId, msg.key);
-            await logAction(groupId, senderId, 'MUTE_DELETE', 'Nachricht von gemutetem User gelöscht', 'system');
-            return;
-        }
-        let violationReason = null;
-        if (settings.antiSpam && isSpamming(groupId, senderId)) {
-            violationReason = 'Spam-Schutz: Zu viele Nachrichten.';
-        }
-        if (!violationReason) {
-            if (!settings.allowStickers && msgType === 'sticker') violationReason = 'Sticker deaktiviert.';
-            else if (!settings.allowImages && msgType === 'image') violationReason = 'Bilder deaktiviert.';
-            else if (!settings.allowVideos && msgType === 'video') violationReason = 'Videos deaktiviert.';
-            else if (!settings.allowAudios && (msgType === 'audio' || msgType === 'ptt')) violationReason = 'Audios deaktiviert.';
-        }
-        if (!violationReason && !settings.allowLinks && text && /(https?:\/\/[^\s]+|chat\.whatsapp\.com\/[a-zA-Z0-9]+)/i.test(text)) {
-            violationReason = 'Links sind nicht gestattet.';
-        }
-
-        if (!violationReason && text) {
-            const hit = profanity.findBadWord(text);
-            if (hit) {
-                log('🔤 Schimpfwort-Match: "' + hit + '"');
-                violationReason = 'Schimpfwort erkannt.';
-            }
-        }
-
-        if (!violationReason && text && getConfigBool('ki_profanity_enabled', true)) {
-            const minLen = getConfigInt('ki_profanity_min_length', 3);
-            const maxLen = getConfigInt('ki_profanity_max_length', 500);
-            const t = text.trim();
-            if (t.length >= minLen && t.length <= maxLen) {
-                try {
-                    const timeoutMs = getConfigInt('ki_profanity_timeout_ms', 8000);
-                    const kiResult = await checkProfanityWithKi(t, { timeoutMs });
-                    if (kiResult && kiResult.bad) {
-                        log('🤖 KI-Schimpfwort erkannt (raw: ' + (kiResult.raw || 'JA') + ')');
-                        violationReason = 'Beleidigung/Schimpfwort (KI erkannt).';
-                    }
-                } catch (e) {
-                    log('⚠️ KI-Profanity-Check Fehler: ' + (e.message || e));
-                }
-            }
-        }
-
-        if (violationReason) {
-            stats.violations++;
-            log('🚨 ' + violationReason + (isAdmin ? ' (Admin)' : ''));
-            await handleViolation(msg, meta, groupId, senderId, violationReason, settings.maxWarnings, isAdmin);
-        }
-    } catch (error) {
-        console.error('⚠️ Handler-Fehler:', error?.stack || error);
-        await logAction(msg?.key?.remoteJid || SYSTEM_GROUP, 'system', 'ERROR', 'onIncomingMessage: ' + (error?.message || error), 'system');
+      }
+      return;
     }
+
+    if (update.action === 'remove') {
+      for (const userId of update.participants || []) {
+        await logAction(groupId, userId, 'LEAVE', null, 'system');
+      }
+
+      const settings = await getGroupSettings(groupId);
+      if (settings.isActive && settings.welcomeActive) {
+        await sendText(groupId, settings.leaveMsg);
+        await logAction(groupId, 'group', 'LEAVE_MSG_SENT', null, 'system');
+      }
+    }
+  } catch (error) {
+    log('⚠️ group-participants: ' + (error.message || error));
+    await logAction(groupId || SYSTEM_GROUP, 'system', 'ERROR', 'group-participants: ' + (error.message || error), 'system');
+  }
+}
+
+function isKiCommand(text, prefix) {
+  const lower = String(text || '').trim().toLowerCase();
+  return (
+    lower === prefix + 'ki' ||
+    lower.startsWith(prefix + 'ki ') ||
+    lower === prefix + 'kistatus' ||
+    lower === prefix + 'resetki' ||
+    lower === prefix + 'kimembers' ||
+    lower === prefix + 'resetkimembers'
+  );
+}
+
+export async function onIncomingMessage(msg) {
+  try {
+    if (!msg?.message || !msg.key || msg.key.fromMe) return;
+
+    const groupId = msg.key.remoteJid;
+    if (!isGroupJid(groupId)) return;
+
+    const senderId = msg.key.participant || msg.participant || groupId;
+    const text = extractMessageText(msg);
+    const msgType = detectMessageType(msg);
+    const stats = getStats();
+
+    incrementStat('messages');
+    log('📩 "' + (text || '[' + msgType + ']') + '" from=' + senderId);
+
+    const settings = await getGroupSettings(groupId);
+    const context = await getGroupContext(groupId, senderId, getBotOwners());
+    const prefix = getPrefix();
+
+    if (context.isAdmin && text.startsWith(prefix)) {
+      const handled = await dispatchCommand({
+        msg,
+        meta: context.meta,
+        settings,
+        groupId,
+        senderId,
+        text,
+        prefix
+      });
+
+      if (handled) {
+        incrementStat('commands');
+        await logAction(groupId, senderId, 'COMMAND', text.trim().split(/\s+/)[0].toLowerCase(), senderId);
+        return;
+      }
+    }
+
+    if (text.startsWith(prefix) && isKiCommand(text, prefix)) {
+      const lower = text.trim().toLowerCase();
+      const sub = text.trim().split(/\s+/)[1]?.toLowerCase();
+      const needsActive = !(
+        lower === prefix + 'kistatus' ||
+        lower === prefix + 'kimembers' ||
+        (lower.startsWith(prefix + 'ki ') && (sub === 'status' || sub === 'members'))
+      );
+
+      if (needsActive && !settings.isActive) return;
+
+      const handled = await handleKiCommand(
+        getRuntimeSocket(),
+        msg,
+        groupId,
+        senderId,
+        text,
+        msg.pushName || 'User',
+        { allowKi: settings.allowKi !== false, prefix }
+      );
+
+      if (handled) {
+        incrementStat('commands');
+        await logAction(groupId, senderId, 'COMMAND', text.trim().split(/\s+/)[0].toLowerCase(), senderId);
+        return;
+      }
+    }
+
+    if (!settings.isActive) return;
+
+    if (await isMuted(groupId, senderId)) {
+      const sock = getRuntimeSocket();
+      await sock.sendMessage(groupId, { delete: msg.key });
+      await logAction(groupId, senderId, 'MUTE_DELETE', 'Nachricht von gemutetem User gelöscht', 'system');
+      return;
+    }
+
+    let violationReason = null;
+
+    if (settings.antiSpam && isSpamming(groupId, senderId)) {
+      violationReason = 'Spam-Schutz: Zu viele Nachrichten.';
+    }
+
+    if (!violationReason) {
+      if (!settings.allowStickers && msgType === 'sticker') violationReason = 'Sticker deaktiviert.';
+      else if (!settings.allowImages && msgType === 'image') violationReason = 'Bilder deaktiviert.';
+      else if (!settings.allowVideos && msgType === 'video') violationReason = 'Videos deaktiviert.';
+      else if (!settings.allowAudios && (msgType === 'audio' || msgType === 'ptt')) violationReason = 'Audios deaktiviert.';
+    }
+
+    if (!violationReason && !settings.allowLinks && text && /(https?:\/\/[^\s]+|chat\.whatsapp\.com\/[a-zA-Z0-9]+)/i.test(text)) {
+      violationReason = 'Links sind nicht gestattet.';
+    }
+
+    if (!violationReason && text) {
+      const hit = profanity.findBadWord(text);
+      if (hit) violationReason = 'Schimpfwort erkannt.';
+    }
+
+    if (!violationReason && text && getConfigBool('ki_profanity_enabled', true)) {
+      const minLength = getConfigInt('ki_profanity_min_length', 3);
+      const maxLength = getConfigInt('ki_profanity_max_length', 4000);
+      const normalizedText = text.trim();
+
+      if (normalizedText.length >= minLength && normalizedText.length <= maxLength) {
+        try {
+          const result = await checkProfanityWithKi(normalizedText, {
+            timeoutMs: getConfigInt('ki_profanity_timeout_ms', 12000)
+          });
+          if (result?.bad) violationReason = 'Beleidigung/Schimpfwort (KI erkannt).';
+        } catch (error) {
+          log('⚠️ KI-Profanity-Check: ' + (error.message || error));
+        }
+      }
+    }
+
+    if (violationReason) {
+      incrementStat('violations');
+      await applyViolation({
+        msg,
+        meta: context.meta,
+        groupId,
+        senderId,
+        reason: violationReason,
+        maxWarnings: settings.maxWarnings,
+        isAdmin: context.isAdmin
+      });
+    }
+  } catch (error) {
+    console.error('⚠️ Handler-Fehler:', error?.stack || error);
+    await logAction(msg?.key?.remoteJid || SYSTEM_GROUP, 'system', 'ERROR', 'onIncomingMessage: ' + (error?.message || error), 'system');
+  }
 }
