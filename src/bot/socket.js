@@ -70,7 +70,7 @@ export default async function startSocket() {
         if (connection === 'open') {
             botStartTime = Date.now();
             markStarted();
-            log('🤖 Moderations-Bot v3.6.0 ist einsatzbereit!');
+            log('🤖 Moderations-Bot v3.7.0 ist einsatzbereit!');
             await syncParticipatingGroups();
             await logAction(SYSTEM_GROUP, 'bot', 'CONNECTED', 'WhatsApp-Verbindung hergestellt', 'system');
         }
