@@ -1,6 +1,5 @@
 import { dbPool } from '../database/index.js';
 import { deleteMessage, sendText, removeParticipant } from './message-service.js';
-import { getGroupMeta } from './group-service.js';
 import { isParticipantAdmin, normalizePhone, extractMessageText, detectMessageType } from '../core/utils.js';
 import { logAction } from '../logging/index.js';
 import { getSpamLimit } from '../config/runtime.js';
@@ -18,12 +17,11 @@ export function isSpamming(groupId, userId) {
 }
 
 export async function addWarning(groupId, userId) {
-  const db = dbPool();
-  await db.query(
+  await dbPool.query(
     'INSERT INTO warnings (group_id, user_id, warn_count) VALUES (?, ?, 1) ON DUPLICATE KEY UPDATE warn_count = warn_count + 1',
     [groupId, userId]
   );
-  const [rows] = await db.query(
+  const [rows] = await dbPool.query(
     'SELECT warn_count FROM warnings WHERE group_id = ? AND user_id = ?',
     [groupId, userId]
   );
@@ -31,7 +29,7 @@ export async function addWarning(groupId, userId) {
 }
 
 export async function getWarningCount(groupId, userId) {
-  const [rows] = await dbPool().query(
+  const [rows] = await dbPool.query(
     'SELECT warn_count FROM warnings WHERE group_id = ? AND user_id = ?',
     [groupId, userId]
   );
@@ -39,11 +37,11 @@ export async function getWarningCount(groupId, userId) {
 }
 
 export async function resetWarnings(groupId, userId) {
-  await dbPool().query('DELETE FROM warnings WHERE group_id = ? AND user_id = ?', [groupId, userId]);
+  await dbPool.query('DELETE FROM warnings WHERE group_id = ? AND user_id = ?', [groupId, userId]);
 }
 
 export async function isMuted(groupId, userId) {
-  const [rows] = await dbPool().query(
+  const [rows] = await dbPool.query(
     'SELECT 1 FROM muted_users WHERE group_id = ? AND user_id = ?',
     [groupId, userId]
   );
@@ -51,14 +49,14 @@ export async function isMuted(groupId, userId) {
 }
 
 export async function getActiveBan(groupId, userId) {
-  const [rows] = await dbPool().query(
+  const [rows] = await dbPool.query(
     'SELECT * FROM banned_users WHERE group_id = ? AND user_id = ?',
     [groupId, userId]
   );
   if (!rows.length) return null;
   const row = rows[0];
   if (row.banned_until && new Date(row.banned_until).getTime() <= Date.now()) {
-    await dbPool().query('DELETE FROM banned_users WHERE group_id = ? AND user_id = ?', [groupId, userId]);
+    await dbPool.query('DELETE FROM banned_users WHERE group_id = ? AND user_id = ?', [groupId, userId]);
     return null;
   }
   return row;
@@ -69,13 +67,7 @@ export async function applyViolation({ msg, meta, groupId, senderId, reason, max
   const warns = await addWarning(groupId, senderId);
   const snippet = (extractMessageText(msg) || '[' + detectMessageType(msg) + ']').slice(0, 200);
 
-  await logAction(groupId, senderId, 'WARN', reason, 'system', {
-    warns,
-    maxWarnings,
-    deleted,
-    snippet
-  });
-
+  await logAction(groupId, senderId, 'WARN', reason, 'system', { warns, maxWarnings, deleted, snippet });
   const number = normalizePhone(senderId) || senderId.split('@')[0];
 
   if (warns >= maxWarnings) {
@@ -96,10 +88,6 @@ export async function applyViolation({ msg, meta, groupId, senderId, reason, max
     return { action: 'kick', warns };
   }
 
-  await sendText(
-    groupId,
-    '⚠️ @' + number + ', deine Nachricht wurde entfernt.\n*Grund:* ' + reason + '\n*Verwarnung:* ' + warns + '/' + maxWarnings,
-    [senderId]
-  );
+  await sendText(groupId, '⚠️ @' + number + ', deine Nachricht wurde entfernt.\n*Grund:* ' + reason + '\n*Verwarnung:* ' + warns + '/' + maxWarnings, [senderId]);
   return { action: 'warn', warns };
 }
