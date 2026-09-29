@@ -1,7 +1,7 @@
 import { getGroupSettings } from './src/database/index.js';
 import { getPrefix, getConfigBool, getConfigInt, getBotOwners } from './src/config/runtime.js';
 import { getStats, incrementStat, getRuntimeSocket } from './src/core/runtime.js';
-import { extractMessageText, detectMessageType, isGroupJid, normalizePhone } from './src/core/utils.js';
+import { extractMessageText, detectMessageType, isGroupJid, normalizePhone, parseMentions } from './src/core/utils.js';
 import { getGroupMeta, getGroupContext, invalidateGroup } from './src/services/group-service.js';
 import { isBotOwner } from './src/services/permission-service.js';
 import { sendText } from './src/services/message-service.js';
@@ -107,7 +107,8 @@ export async function onIncomingMessage(msg) {
         groupId,
         senderId,
         text,
-        prefix
+        prefix,
+        mentions: parseMentions(msg)
       });
 
       if (handled) {
