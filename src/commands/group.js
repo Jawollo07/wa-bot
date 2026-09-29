@@ -3,6 +3,7 @@ import { getRuntimeSocket } from '../core/runtime.js';
 import { sendText } from '../services/message-service.js';
 import { logAction } from '../logging/index.js';
 import { getCommunityId, getGroupMeta } from '../services/group-service.js';
+import { isParticipantAdmin } from '../core/utils.js';
 
 export const GROUP_COMMANDS=Object.freeze(['lock','unlock','toggle','maxwarns','setwelcome','setleave','settings','community']);
 
@@ -13,6 +14,8 @@ export async function dispatchGroupCommand(c){
    const communityId = getCommunityId(meta);
    if (!communityId) { await reply('ℹ️ Diese Gruppe gehört zu keiner erkannten WhatsApp-Community.'); return true; }
    const action = (args[1] || 'settings').toLowerCase();
+   const communityMeta = await getGroupMeta(communityId);
+   if (!isParticipantAdmin(communityMeta, senderId)) { await reply('⛔ Nur Community-Admins dürfen die Community-Regelung ändern.'); return true; }
    if (action === 'override') {
      const enabled = ['on','an','true','1'].includes((args[2] || '').toLowerCase());
      if (!args[2]) { await reply('⚠️ Nutzung: '+prefix+'community override on/off'); return true; }
@@ -25,7 +28,7 @@ export async function dispatchGroupCommand(c){
      await reply(action === 'on' ? '🟢 Community-Regelung aktiviert.' : '🔴 Community-Regelung deaktiviert.');
      return true;
    }
-   const map = { links:'links', stickers:'stickers', images:'images', videos:'videos', audios:'audios', antispam:'antispam', ki:'ki' };
+   const map = { links:'links', stickers:'stickers', images:'images', videos:'videos', audios:'audios', antispam:'antispam', ki:'ki', maxwarns:'maxwarns' };
    if (action === 'settings') {
      const s = await getCommunitySettings(communityId);
      await reply('🌐 *Community-Regelung*\\n\\n• Aktiv: '+(s.enabled?'✅':'❌')+'\\n• Links: '+(s.allowLinks===null?'Gruppenwert':s.allowLinks?'AN':'AUS')+'\\n• Sticker: '+(s.allowStickers===null?'Gruppenwert':s.allowStickers?'AN':'AUS')+'\\n• Bilder: '+(s.allowImages===null?'Gruppenwert':s.allowImages?'AN':'AUS')+'\\n• Videos: '+(s.allowVideos===null?'Gruppenwert':s.allowVideos?'AN':'AUS')+'\\n• Audios: '+(s.allowAudios===null?'Gruppenwert':s.allowAudios?'AN':'AUS')+'\\n• Anti-Spam: '+(s.antiSpam===null?'Gruppenwert':s.antiSpam?'AN':'AUS')+'\\n• Max. Warns: '+(s.maxWarnings===null?'Gruppenwert':s.maxWarnings)+'\\n• KI: '+(s.allowKi===null?'Gruppenwert':s.allowKi?'AN':'AUS'));
