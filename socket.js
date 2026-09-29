@@ -10,6 +10,7 @@ import { Boom } from '@hapi/boom';
 import { onIncomingMessage, onGroupParticipantsUpdate } from './messageHandler.js';
 import log, { logAction } from './src/logging/index.js';
 import { getPhoneNumber, getAuthDir } from './src/config/runtime.js';
+import { setSocket, markStarted } from './src/core/runtime.js';
 const SYSTEM_GROUP = 'SYSTEM';
 let sock;
 let pairingRequested = false;
@@ -37,7 +38,7 @@ export default async function startSocket() {
         generateHighQualityLinkPreview: false
     });
 
-    globalThis.__waBotSocket = sock;
+    setSocket(sock);
     sock.ev.on('creds.update', saveCreds);
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
@@ -54,6 +55,7 @@ export default async function startSocket() {
         }
         if (connection === 'open') {
             botStartTime = Date.now();
+            markStarted();
             log('🤖 Moderations-Bot v3.5.0 ist einsatzbereit!');
             await logAction(SYSTEM_GROUP, 'bot', 'CONNECTED', 'WhatsApp-Verbindung hergestellt', 'system');
         }
