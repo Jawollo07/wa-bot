@@ -18,7 +18,6 @@ const sock = new Proxy({}, {
   }
 });
 const PREFIX = () => getPrefix();
-const botStartTime = getStartedAt();
 let loadedBadWords = [];
 
 async function reloadBadWordsCache() {
@@ -54,7 +53,7 @@ export default async function handleAdminCommands(msg, meta, settings, groupId, 
     }
     if (command === p + 'ping') {
         const t0 = Date.now();
-        await reply('🏓 Pong! (' + (Date.now() - t0) + 'ms) | Uptime: ' + formatUptime(Date.now() - botStartTime));
+        await reply('🏓 Pong! (' + (Date.now() - t0) + 'ms) | Uptime: ' + formatUptime(Date.now() - getStartedAt()));
         return true;
     }
     if (command === p + 'info') {
@@ -62,7 +61,7 @@ export default async function handleAdminCommands(msg, meta, settings, groupId, 
         const kiProf = getConfigBool('ki_profanity_enabled', true);
         await reply(
             '🤖 *wa-bot v3.5.0 (Baileys + Ollama)*\n' +
-            '• Uptime: ' + formatUptime(Date.now() - botStartTime) + '\n' +
+            '• Uptime: ' + formatUptime(Date.now() - getStartedAt()) + '\n' +
             '• Nachrichten: ' + stats.messages + '\n' +
             '• Verstöße: ' + stats.violations + '\n' +
             '• Befehle: ' + stats.commands + '\n' +
