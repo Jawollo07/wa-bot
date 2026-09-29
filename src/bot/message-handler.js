@@ -2,7 +2,7 @@ import { getGroupSettings } from '../database/index.js';
 import { getPrefix, getConfigBool, getConfigInt, getBotOwners } from '../config/runtime.js';
 import { getStats, incrementStat, getRuntimeSocket } from '../core/runtime.js';
 import { extractMessageText, detectMessageType, isGroupJid, normalizePhone, parseMentions } from '../core/utils.js';
-import { getGroupMeta, getGroupContext, invalidateGroup } from '../services/group-service.js';
+import { getGroupMeta, getGroupContext, getEffectiveGroupSettings, invalidateGroup } from '../services/group-service.js';
 import { isBotOwner } from '../services/permission-service.js';
 import { sendText } from '../services/message-service.js';
 import { getActiveBan, isMuted } from '../services/moderation/index.js';
@@ -43,7 +43,8 @@ export async function onGroupParticipantsUpdate(update) {
         }
 
         await logAction(groupId, userId, 'JOIN', null, 'system');
-        const settings = await getGroupSettings(groupId);
+        const context = await getGroupContext(groupId, senderId, getBotOwners());
+    const settings = await getEffectiveGroupSettings(groupId, context.meta);
         if (settings.isActive && settings.welcomeActive) {
           const number = normalizePhone(userId) || userId.split('@')[0];
           await sendText(groupId, settings.welcomeMsg.replace(/@user/gi, '@' + number), [userId]);
@@ -98,7 +99,6 @@ export async function onIncomingMessage(msg) {
     log('📩 "' + (text || '[' + msgType + ']') + '" from=' + senderId);
 
     const settings = await getGroupSettings(groupId);
-    const context = await getGroupContext(groupId, senderId, getBotOwners());
     const prefix = getPrefix();
 
     if (context.isAdmin && text.startsWith(prefix)) {
