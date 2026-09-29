@@ -72,6 +72,15 @@ DB_PORT=3306
 
 ISC – Nutzung auf eigene Verantwortung. Nicht für Spam oder Verstöße gegen die WhatsApp-Nutzungsbedingungen.
 
+## Community-Unterstützung
+
+Der Bot verarbeitet automatisch jede WhatsApp-Gruppe, in der sein Konto Mitglied ist. Das gilt auch für Gruppen innerhalb einer WhatsApp Community. Beim Start werden alle aktuell beteiligten Gruppen über Baileys synchronisiert und neue Gruppen werden automatisch mit aktivierter Bot-Konfiguration angelegt.
+
+- Keine manuelle Aktivierung mit `bot on` nötig.
+- Community-Untergruppen werden anhand ihrer Community-Metadaten erkannt.
+- Ein Bot kann nicht selbst einer Gruppe beitreten; er muss Mitglied der jeweiligen Gruppe sein.
+- `bot off` bleibt als bewusste manuelle Deaktivierung erhalten und verhindert die automatische Reaktivierung.
+
 ## Release 3.6.0
 
 Die 3.6.0-Version finalisiert die modulare Architektur:
