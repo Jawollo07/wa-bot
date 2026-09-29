@@ -54,3 +54,29 @@ export async function ensureColumn(table, column, definition) {
         catch (e) { if (!String(e.message || e).includes('Duplicate column')) console.error('  ⚠️ Migration ' + table + '.' + column + ':', e.message || e); }
     }
 }
+
+
+function dbFlag(value, fallback = false) {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') return value === '1' || value.toLowerCase() === 'true';
+  return Boolean(value);
+}
+function mapSettingsRow(r) {
+  return {
+    groupId: r.group_id,
+    isActive: dbFlag(r.is_active),
+    allowLinks: dbFlag(r.allow_links),
+    allowStickers: dbFlag(r.allow_stickers),
+    allowImages: dbFlag(r.allow_images, true),
+    allowVideos: dbFlag(r.allow_videos, true),
+    allowAudios: dbFlag(r.allow_audios, true),
+    antiSpam: dbFlag(r.anti_spam, true),
+    maxWarnings: r.max_warnings != null ? Number(r.max_warnings) : 3,
+    welcomeActive: dbFlag(r.welcome_active),
+    allowKi: dbFlag(r.allow_ki, true),
+    welcomeMsg: r.welcome_msg || 'Willkommen in der Gruppe, @user! 👋',
+    leaveMsg: r.leave_msg || 'Ein Nutzer hat die Gruppe verlassen. 😢'
+  };
+}
