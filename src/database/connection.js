@@ -1,4 +1,4 @@
-import initDatabase, { dbPool, getGroupSettings, ensureColumn } from '../../db.js';
+import initDatabase, { dbPool, getGroupSettings, ensureColumn } from './mysql.js';
 import { setDatabase } from '../core/runtime.js';
 
 export async function initializeDatabase() {
