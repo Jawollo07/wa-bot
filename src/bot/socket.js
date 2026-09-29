@@ -11,7 +11,21 @@ import { onIncomingMessage, onGroupParticipantsUpdate } from './message-handler.
 import log, { logAction } from '../logging/index.js';
 import { getPhoneNumber, getAuthDir } from '../config/runtime.js';
 import { setSocket, markStarted } from '../core/runtime.js';
+import { getParticipatingGroups, isCommunityGroup } from '../services/group-service.js';
+import { getGroupSettings } from '../database/index.js';
 const SYSTEM_GROUP = 'SYSTEM';
+
+async function syncParticipatingGroups() {
+    const groups = await getParticipatingGroups();
+    let communityCount = 0;
+    for (const meta of groups) {
+        if (!meta?.id) continue;
+        const settings = await getGroupSettings(meta.id);
+        if (isCommunityGroup(meta)) communityCount++;
+        log('👥 Gruppe erkannt: ' + (meta.subject || meta.id) + ' | aktiv=' + settings.isActive + (isCommunityGroup(meta) ? ' | Community' : ''));
+    }
+    log('👥 Gruppen-Sync abgeschlossen: ' + groups.length + ' Gruppen, davon ' + communityCount + ' Community-Gruppen.');
+}
 let sock;
 let pairingRequested = false;
 let botStartTime = 0;
@@ -56,7 +70,8 @@ export default async function startSocket() {
         if (connection === 'open') {
             botStartTime = Date.now();
             markStarted();
-            log('🤖 Moderations-Bot v3.5.0 ist einsatzbereit!');
+            log('🤖 Moderations-Bot v3.6.0 ist einsatzbereit!');
+            await syncParticipatingGroups();
             await logAction(SYSTEM_GROUP, 'bot', 'CONNECTED', 'WhatsApp-Verbindung hergestellt', 'system');
         }
         if (connection === 'close') {
