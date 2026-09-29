@@ -1,4 +1,4 @@
-# wa-bot v3.6.0 (Baileys)
+# wa-bot v3.7.0 (Baileys)
 
 WhatsApp-**Moderations-Bot** auf Basis von Baileys, MySQL und optional Ollama.
 
@@ -81,9 +81,9 @@ Der Bot verarbeitet automatisch jede WhatsApp-Gruppe, in der sein Konto Mitglied
 - Ein Bot kann nicht selbst einer Gruppe beitreten; er muss Mitglied der jeweiligen Gruppe sein.
 - `bot off` bleibt als bewusste manuelle Deaktivierung erhalten und verhindert die automatische Reaktivierung.
 
-## Release 3.6.0
+## Release 3.7.0
 
-Die 3.6.0-Version finalisiert die modulare Architektur:
+Die 3.7.0-Version erweitert die modulare Architektur:
 
 - Root-Level-Implementierungen wurden entfernt.
 - Command-, Moderations-, Datenbank-, Logging-, KI- und Bot-Logik sind über klare `src/`-Boundaries organisiert.
