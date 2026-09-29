@@ -1,35 +1,37 @@
-# wa-bot v3.5 (Baileys)
+# wa-bot v3.6.0 (Baileys)
 
 WhatsApp-**Moderations-Bot** auf Basis von Baileys, MySQL und optional Ollama.
 
 ## Architektur
 
-Der Bot verwendet jetzt eine modulare Application-Schicht unter `src/`. Die bisherigen Root-Module bleiben als kompatible Implementierungsadapter erhalten, damit bestehende Installationen und Session-/Datenbankzustände ohne Migration weiterlaufen.
+Der Bot ist vollständig modularisiert. `app.js` ist nur noch der Bootstrap; fachliche Logik liegt unter `src/`.
 
 ```text
 src/
-├── ai/            # Ollama/KI-Grenze
-├── bot/           # Baileys-Verbindung + Event-Grenze
-├── commands/      # Command-Grenze
-├── config/        # Laufzeit-Konfiguration
-├── database/      # MySQL-Grenze
-├── logging/       # zentrales Logging
-└── moderation/    # Moderations-/Profanity-Grenze
+├── bot/             # Baileys-Transport + Message-Pipeline
+├── commands/        # Command-Registry + Domain-Commands
+├── config/          # Bootstrap- und Laufzeit-Konfiguration
+├── core/            # Runtime, Logger, Utilities
+├── database/        # MySQL-Boundary
+├── ki/              # Ollama/KI
+├── logging/         # Persistentes Moderations-Logging
+├── moderation/      # Wortfilter + öffentliche Moderations-Boundary
+└── services/
+    ├── moderation/  # Warnungen, Bans, Mutes, Spam, Violations
+    ├── group-service.js
+    ├── message-service.js
+    └── permission-service.js
 ```
 
-Die Abhängigkeiten laufen damit grundsätzlich über:
+### Architekturregeln
 
-```text
-WhatsApp Event
-    ↓
-   bot
-    ↓
- commands / moderation / ai
-    ↓
- database / logging / config
-```
-
-Die bestehenden Root-Dateien (`commands.js`, `db.js`, `ollama.js`, `socket.js`, `messageHandler.js`, `mod_actions.js`, `profanity.js`, `config.js`, `logging.js`) sind aktuell die Implementierungsebene. Neue Funktionen sollten möglichst über die entsprechenden `src/*`-Module eingebunden werden. Die vollständige Aufteilung der einzelnen Command- und Service-Implementierungen kann dadurch schrittweise erfolgen, ohne den laufenden Bot zu brechen.
+- WhatsApp/Baileys-Zugriff läuft über `src/bot/` und die Runtime-/Message-Service-Boundaries.
+- Datenbankzugriff läuft über `src/database/`.
+- Moderationslogik liegt unter `src/moderation/` und `src/services/moderation/`.
+- Gruppen-Metadaten und Cache liegen im Group Service.
+- Berechtigungsprüfungen liegen im Permission Service.
+- Der Message Handler orchestriert die Nachrichten-Pipeline.
+- Neue Funktionen werden nicht mehr als Root-Level-Implementierungen angelegt.
 
 ## Voraussetzungen
 
@@ -70,69 +72,12 @@ DB_PORT=3306
 
 ISC – Nutzung auf eigene Verantwortung. Nicht für Spam oder Verstöße gegen die WhatsApp-Nutzungsbedingungen.
 
-## Weiterentwicklung
+## Release 3.6.0
 
-Die nächste Refactoring-Stufe kann die großen Implementierungsdateien weiter zerlegen, insbesondere:
+Die 3.6.0-Version finalisiert die modulare Architektur:
 
-- `commands.js` → einzelne Command-Module
-- `messageHandler.js` → Event-, Filter- und Moderations-Pipeline
-- `mod_actions.js` → Warning/Mute/Ban/Action-Services
-- `ollama.js` → Client, Memory und KI-Moderation
-- `db.js` → Repositories und Migrationen
-
-Dabei sollen die bestehenden Commands und Datenbankschemata unverändert funktionieren.
-
-
-## Modulare Architektur
-
-Der Branch refactor/modular-architecture führt eine Service-/Runtime-Schicht ein. Die bisherige globale Kopplung wird schrittweise abgebaut.
-
-Struktur:
-
-src/core/ — Runtime, Application Context, Utilities und Logger
-src/services/ — Gruppen, Nachrichten, Berechtigungen und Moderation
-src/database/ — Datenbank-Boundary und Verbindung
-src/commands/ — Command Context, Registry und Domain-Commands
-src/ai/ — KI-Integration
-src/moderation/ — Moderationslogik
-src/bot/ — WhatsApp/Baileys-Transport
-
-### Architekturregeln
-
-- WhatsApp/Baileys-Zugriff läuft über den Runtime-Socket bzw. den Message Service.
-- Datenbankzugriff läuft über die Database Boundary.
-- Moderation kennt keine WhatsApp-Verbindungsdetails.
-- Gruppen-Metadaten und Cache liegen im Group Service.
-- Berechtigungsprüfungen liegen im Permission Service.
-- Der Message Handler orchestriert die Pipeline.
-- Legacy-Code bleibt während der Migration hinter klaren Grenzen und wird schrittweise entfernt.
-
-### Migrationsziel
-
-Die Root-Dateien commands.js, mod_actions.js, messageHandler.js, db.js und logging.js werden schrittweise aus der globalen Service-Schicht entfernt oder auf minimale Kompatibilitätsadapter reduziert.
-
-Der Umbau erfolgt auf einem separaten Branch, damit master unverändert bleibt.
-
-
-## Modulare Architektur
-
-Die Anwendung ist vollständig unter `src/` organisiert. `app.js` ist nur noch der Bootstrap.
-
-```
-src/
-├── bot/             # Baileys Transport + Message Pipeline
-├── commands/        # Command Registry und Domain-Handler
-├── config/          # Bootstrap- und Runtime-Konfiguration
-├── core/            # Runtime, Logger, Utility-Funktionen
-├── database/        # MySQL-Verbindung und Datenbankzugriff
-├── ki/              # Ollama/KI
-├── logging/         # Persistentes Moderations-Logging
-├── moderation/      # Wortfilter und Moderations-Lifecycle
-└── services/
-    ├── moderation/  # Warnungen, Bans, Mutes, Spam, Violations
-    ├── group-service.js
-    ├── message-service.js
-    └── permission-service.js
-```
-
-Root-Level-Implementierungen wie `commands.js`, `db.js`, `logging.js`, `messageHandler.js`, `socket.js`, `config.js`, `profanity.js` und `ollama.js` wurden entfernt. Neue Funktionen sollen ausschließlich über die jeweiligen `src/`-Boundaries importiert werden.
+- Root-Level-Implementierungen wurden entfernt.
+- Command-, Moderations-, Datenbank-, Logging-, KI- und Bot-Logik sind über klare `src/`-Boundaries organisiert.
+- `app.js` dient ausschließlich als Bootstrap.
+- Moderationsfunktionen sind in spezialisierte Services für Warnungen, Bans, Mutes, Spam und Violations aufgeteilt.
+- Die README beschreibt jetzt den finalen Stand statt eines laufenden Migrationszustands.
