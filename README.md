@@ -81,3 +81,34 @@ Die nächste Refactoring-Stufe kann die großen Implementierungsdateien weiter z
 - `db.js` → Repositories und Migrationen
 
 Dabei sollen die bestehenden Commands und Datenbankschemata unverändert funktionieren.
+
+
+## Modulare Architektur
+
+Der Branch refactor/modular-architecture führt eine Service-/Runtime-Schicht ein. Die bisherige globale Kopplung wird schrittweise abgebaut.
+
+Struktur:
+
+src/core/ — Runtime, Application Context, Utilities und Logger
+src/services/ — Gruppen, Nachrichten, Berechtigungen und Moderation
+src/database/ — Datenbank-Boundary und Verbindung
+src/commands/ — Command Context, Registry und Domain-Commands
+src/ai/ — KI-Integration
+src/moderation/ — Moderationslogik
+src/bot/ — WhatsApp/Baileys-Transport
+
+### Architekturregeln
+
+- WhatsApp/Baileys-Zugriff läuft über den Runtime-Socket bzw. den Message Service.
+- Datenbankzugriff läuft über die Database Boundary.
+- Moderation kennt keine WhatsApp-Verbindungsdetails.
+- Gruppen-Metadaten und Cache liegen im Group Service.
+- Berechtigungsprüfungen liegen im Permission Service.
+- Der Message Handler orchestriert die Pipeline.
+- Legacy-Code bleibt während der Migration hinter klaren Grenzen und wird schrittweise entfernt.
+
+### Migrationsziel
+
+Die Root-Dateien commands.js, mod_actions.js, messageHandler.js, db.js und logging.js werden schrittweise aus der globalen Service-Schicht entfernt oder auf minimale Kompatibilitätsadapter reduziert.
+
+Der Umbau erfolgt auf einem separaten Branch, damit master unverändert bleibt.
