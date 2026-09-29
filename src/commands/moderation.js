@@ -5,7 +5,7 @@ import { logAction } from '../logging/index.js';
 import { addWarning,getWarningCount,resetWarnings,clearWarnings,mute,unmute,listMuted } from '../services/moderation/index.js';
 import { banUser,unbanUser,getActiveBan,parseBanDuration,formatBanUntil } from '../services/moderation/bans.js';
 import { dbPool } from '../database/index.js';
-import * as profanity from '../../profanity.js';
+import * as profanity from '../moderation/profanity.js';
 
 export const MODERATION_COMMANDS=Object.freeze(['mute','unmute','muted','ban','unban','banned','kick','warns','warnings','resetwarns','unwarn','clearwarns','addword','delword']);
 
