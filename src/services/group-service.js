@@ -1,4 +1,4 @@
-import { getGroupSettings } from '../database/index.js';
+import { getGroupSettings, getCommunitySettings } from '../database/index.js';
 import { getRuntimeSocket } from '../core/runtime.js';
 import { normalizeJid, normalizePhone, isParticipantAdmin } from '../core/utils.js';
 import log from '../logging/index.js';
@@ -49,3 +49,25 @@ export function isCommunityGroup(meta) {
 }
 
 export { normalizeJid };
+
+
+export function getCommunityId(meta) {
+  if (!meta) return null;
+  if (meta.isCommunity && meta.id) return meta.id;
+  return meta.linkedParent || null;
+}
+
+export async function getEffectiveGroupSettings(groupId, meta = null) {
+  const group = await getGroupSettings(groupId);
+  const communityId = getCommunityId(meta);
+  if (!communityId || group.communityOverride) return { ...group, communityId, communityApplied: false };
+  const community = await getCommunitySettings(communityId);
+  if (!community.enabled) return { ...group, communityId, communityApplied: false };
+  const merged = { ...group };
+  for (const key of ['allowLinks','allowStickers','allowImages','allowVideos','allowAudios','antiSpam','maxWarnings','allowKi']) {
+    if (community[key] !== null && community[key] !== undefined) merged[key] = community[key];
+  }
+  merged.communityId = communityId;
+  merged.communityApplied = true;
+  return merged;
+}
