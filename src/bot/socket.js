@@ -12,7 +12,7 @@ import log, { logAction } from '../logging/index.js';
 import { getPhoneNumber, getAuthDir } from '../config/runtime.js';
 import { setSocket, markStarted } from '../core/runtime.js';
 import { getParticipatingGroups, isCommunityGroup } from '../services/group-service.js';
-import { getGroupSettings } from '../database/index.js';
+import { getGroupSettings, ensureGroupAutoActive } from '../database/index.js';
 const SYSTEM_GROUP = 'SYSTEM';
 
 async function syncParticipatingGroups() {
@@ -20,7 +20,7 @@ async function syncParticipatingGroups() {
     let communityCount = 0;
     for (const meta of groups) {
         if (!meta?.id) continue;
-        const settings = await getGroupSettings(meta.id);
+        const settings = await ensureGroupAutoActive(meta.id);
         if (isCommunityGroup(meta)) communityCount++;
         log('👥 Gruppe erkannt: ' + (meta.subject || meta.id) + ' | aktiv=' + settings.isActive + (isCommunityGroup(meta) ? ' | Community' : ''));
     }
