@@ -7,9 +7,10 @@ export default async function initDatabase() {
     dbPool = mysql.createPool({ ...CONFIG.db, waitForConnections: true, connectionLimit: 10, queueLimit: 0 });
     await dbPool.query('CREATE TABLE IF NOT EXISTS bad_words (id INT AUTO_INCREMENT PRIMARY KEY, word VARCHAR(191) UNIQUE NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
     await dbPool.query('CREATE TABLE IF NOT EXISTS warnings (id INT AUTO_INCREMENT PRIMARY KEY, group_id VARCHAR(191) NOT NULL, user_id VARCHAR(191) NOT NULL, warn_count INT DEFAULT 1, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, UNIQUE KEY unique_user_group (group_id, user_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
-    await dbPool.query('CREATE TABLE IF NOT EXISTS group_settings (group_id VARCHAR(191) PRIMARY KEY, is_active TINYINT(1) DEFAULT 0, allow_links TINYINT(1) DEFAULT 0, allow_stickers TINYINT(1) DEFAULT 0, allow_images TINYINT(1) DEFAULT 1, allow_videos TINYINT(1) DEFAULT 1, allow_audios TINYINT(1) DEFAULT 1, anti_spam TINYINT(1) DEFAULT 1, max_warnings INT DEFAULT 3, welcome_active TINYINT(1) DEFAULT 0, welcome_msg TEXT, leave_msg TEXT) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+    await dbPool.query('CREATE TABLE IF NOT EXISTS group_settings (group_id VARCHAR(191) PRIMARY KEY, is_active TINYINT(1) DEFAULT 1, allow_links TINYINT(1) DEFAULT 0, allow_stickers TINYINT(1) DEFAULT 0, allow_images TINYINT(1) DEFAULT 1, allow_videos TINYINT(1) DEFAULT 1, allow_audios TINYINT(1) DEFAULT 1, anti_spam TINYINT(1) DEFAULT 1, max_warnings INT DEFAULT 3, welcome_active TINYINT(1) DEFAULT 0, welcome_msg TEXT, leave_msg TEXT) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
     log('🔄 Prüfe group_settings-Schema...');
-    await ensureColumn('group_settings', 'is_active', 'TINYINT(1) DEFAULT 0');
+    await ensureColumn('group_settings', 'is_active', 'TINYINT(1) DEFAULT 1');
+    await ensureColumn('group_settings', 'auto_activation_disabled', 'TINYINT(1) DEFAULT 0');
     await ensureColumn('group_settings', 'allow_links', 'TINYINT(1) DEFAULT 0');
     await ensureColumn('group_settings', 'allow_stickers', 'TINYINT(1) DEFAULT 0');
     await ensureColumn('group_settings', 'allow_images', 'TINYINT(1) DEFAULT 1');
@@ -31,6 +32,11 @@ export default async function initDatabase() {
     log('✅ MySQL-Datenbank erfolgreich initialisiert!');
     return dbPool;
 }
+export async function ensureGroupAutoActive(groupId) {
+    await dbPool.query('UPDATE group_settings SET is_active = 1 WHERE group_id = ? AND COALESCE(auto_activation_disabled, 0) = 0', [groupId]);
+    return getGroupSettings(groupId);
+}
+
 export async function getGroupSettings(groupId) {
     const [rows] = await dbPool.query('SELECT * FROM group_settings WHERE group_id = ?', [groupId]);
     if (rows.length === 0) {
